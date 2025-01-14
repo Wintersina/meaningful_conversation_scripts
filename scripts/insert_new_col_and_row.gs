@@ -41,7 +41,12 @@ function importNewEventsFromSchedule() {
   colLetter = columnToLetter(newColIndex)
   const row7 = 8;
   const vlookupFormula = `=VLOOKUP(${colLetter}${row7 - 1},'Event IDs'!$B:$C,2,FALSE)`;
+  const TTLRSVPFormula = `="TTL RSVP =" & COUNTIF(${colLetter}13:${colLetter}2008, "*RSVP'D: yes*")`;
+  const TTLATTNDFormula = `="TTL ATTND =" & COUNTIF(${colLetter}13:${colLetter}2009, "*ATTENDED: yes*")`;
   contactListSheet.getRange(row7, newColIndex).setFormula(vlookupFormula);
+  contactListSheet.getRange(row7+1 , newColIndex).setFormula(TTLRSVPFormula).setFontSize(9)
+  contactListSheet.getRange(row7+2, newColIndex).setFormula(TTLATTNDFormula).setFontSize(9)
+
 
   //: Insert the first new title in Row 6 of the new column
   // todo update to a while there are new titles realy to be added
