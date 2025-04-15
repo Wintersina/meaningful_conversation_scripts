@@ -1,5 +1,26 @@
 
 function copyAttendedToCorrectLocationAndPreserveRows() {
+  /**
+ * Copies rows where "Events Attended" is 1 or more to the correct location while preserving formulas.
+ *
+ * This function:
+ * 1. Retrieves all data and formulas from the sheet.
+ * 2. Finds the "RSVP 2+" and "ATTENDED 1+" markers to determine where data should be copied.
+ * 3. Identifies rows where "Events Attended" is 1 or more.
+ * 4. Copies these rows below the "ATTENDED 1+" marker while:
+ *    - Inserting new rows.
+ *    - Preserving original formulas.
+ *    - Adjusting row references dynamically in formulas.
+ * 5. Calls `mergeRowsByKeyPreserveAllFormulas()` to clean up and merge duplicates after inserting.
+ *
+ * Key functions:
+ * - `adjustFormulaForRow(formula, oldRow, newRow)`: Adjusts row references dynamically when copying formulas.
+ * - `mergeRowsByKeyPreserveAllFormulas()`: Merges duplicate entries while keeping formulas intact.
+ *
+ * This script ensures proper tracking of attended events by moving relevant rows while
+ * maintaining sheet integrity and preserving formulas.
+ */
+  Logger.log("starting copyAttendedToCorrectLocationAndPreserveRows");
   let [sheet, _, _2] = sheetsByName()
   const data = sheet.getDataRange().getValues(); // Read all data from the sheet
   const formulas = sheet.getDataRange().getFormulas(); // Read all formulas (A1 notation)
@@ -7,16 +28,12 @@ function copyAttendedToCorrectLocationAndPreserveRows() {
   const colA = 0; // Column A (Index 0)
   const colB = 1; // Column B (Index 1)
 
-  const targetRow = 5; // Row to search
-  const searchStringRSVPCol = "# Events RSVP'd"; // String to search for
-  const searchStringAttendedCol = "# Events Attended"
 
   // Get all values in the target row
-  const rowValues = sheet.getRange(targetRow, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const rowValues = sheet.getRange(ROW_NUMBERS.ROW_5, 1, 1, sheet.getLastColumn()).getValues()[0];
 
   // Find the column index of the search string
-  const RSVPColIndex = rowValues.indexOf(searchStringRSVPCol);
-  const AttendedColIndex = rowValues.indexOf(searchStringAttendedCol);
+  const AttendedColIndex = rowValues.indexOf(COL_CONSTANTS.EVENTS_ATTENDED);
 
   if (AttendedColIndex == 0)
   {
@@ -29,7 +46,7 @@ function copyAttendedToCorrectLocationAndPreserveRows() {
 
   // Find "Stop RSVP" in Column A
   for (let i = 0; i < data.length; i++) {
-    if (data[i][colB] === "RSVP 2+") {
+    if (data[i][colB] === COL_CONSTANTS.RSVP_2_PLUS) {
       RSVPIndex = i;
       break;
     }
@@ -51,7 +68,7 @@ function copyAttendedToCorrectLocationAndPreserveRows() {
 
   // Find "ATTENDED 1+" in Column B
   for (let i = 0; i < data.length; i++) {
-    if (data[i][colB] === "ATTENDED 1+") {
+    if (data[i][colB] === COL_CONSTANTS.ATTENDED_PLUS_ONE) {
       attended1PlusIndex = i + 3;
       break;
     }
@@ -83,6 +100,8 @@ function copyAttendedToCorrectLocationAndPreserveRows() {
 
   // now that the row has been copied to correct location, we merge the duplicates
   mergeRowsByKeyPreserveAllFormulas()
+  Logger.log("ending copyAttendedToCorrectLocationAndPreserveRows");
+
 }
 
 // Function to adjust formula row references dynamically

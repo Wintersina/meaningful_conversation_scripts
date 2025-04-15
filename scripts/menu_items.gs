@@ -1,5 +1,24 @@
 function onOpen() {
-  // Create a custom menu to run the scripts
+  /**
+ * Adds a custom menu to the Google Sheets UI when the spreadsheet is opened.
+ *
+ * This function:
+ * 1. Retrieves the active sheet.
+ * 2. If the sheet name is "Contact List":
+ *    - Creates a "Custom Actions" menu in the UI.
+ *    - Adds menu items that trigger various automation functions, including:
+ *      - Sorting attended and RSVP rows.
+ *      - Merging duplicate rows while preserving formulas.
+ *      - Moving attended and RSVP entries to their correct locations.
+ *      - Importing new events from the Eventbrite sheet to the Contact List.
+ *      - Adding new events from the schedule to the Contact List.
+ * 3. If the active sheet is not "Contact List":
+ *    - Ensures the "Custom Actions" menu is removed.
+ *
+ * This script enhances usability by providing quick access to key actions
+ * for managing event and RSVP data in the Contact List sheet.
+ */
+
   let [sheet, _, _2] = sheetsByName()
   var ui = SpreadsheetApp.getUi();
   if (sheet.getName() === "Contact List") {

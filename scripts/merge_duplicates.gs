@@ -1,4 +1,32 @@
 function mergeRowsByKeyPreserveAllFormulas() {
+
+/**
+ * Merges duplicate rows in the sheet while preserving all formulas.
+ * this is probably the slowest method we have
+ * This function:
+ * 1. Retrieves all data and formulas from the sheet.
+ * 2. Identifies duplicate rows based on the key in Column A.
+ * 3. Merges values from duplicate rows into a single row while:
+ *    - Preserving formulas.
+ *    - Concatenating unique values.
+ *    - Skipping specific columns that should not be merged.
+ * 4. Updates the sheet with merged rows in a batch operation for efficiency.
+ * 5. Deletes duplicate rows in reverse order to prevent row shifting issues.
+ *
+ * Performance Considerations:
+ * - This method is slow for large sheets, especially due to calls like `getLastColumn()`,
+ *   which are expensive operations.
+ * - Performance could be improved by defining a fixed column index range if known.
+ *
+ * Key Implementation Details:
+ * - `skipCols`: Defines columns that should not be merged.
+ * - `mergedData`: Stores merged values and formulas in memory before batch updating.
+ * - `rowsToDelete`: Keeps track of duplicate rows to be deleted efficiently.
+ *
+ * This script ensures that duplicate rows are merged efficiently while preserving
+ * the sheet's structure and formulas.
+ */
+  Logger.log("starting mergeRowsByKeyPreserveAllFormulas");
   let [sheet, _, _2] = sheetsByName()
 
   var range = sheet.getDataRange();
@@ -8,18 +36,14 @@ function mergeRowsByKeyPreserveAllFormulas() {
   var mergedData = {};
   var rowsToDelete = [];
 
-  // Columns to skip during the merge (0-based index)
 
-  const targetRow = 5; // Row to search
-  const searchStringRSVPCol = "# Events RSVP'd"; // String to search for
-  const searchStringAttendedCol = "# Events Attended"
 
   // Get all values in the target row
-  const rowValues = sheet.getRange(targetRow, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const rowValues = sheet.getRange(ROW_NUMBERS.ROW_5, 1, 1, sheet.getLastColumn()).getValues()[0];
 
   // Find the column index of the search string
-  const RSVPColIndex = rowValues.indexOf(searchStringRSVPCol); // Add 1 because array index is 0-based
-  const AttendedColIndex = rowValues.indexOf(searchStringAttendedCol); // Add 1 because array index is 0-based
+  const RSVPColIndex = rowValues.indexOf(COL_CONSTANTS.EVENTS_RSVPD); // Add 1 because array index is 0-based
+  const AttendedColIndex = rowValues.indexOf(COL_CONSTANTS.EVENTS_ATTENDED); // Add 1 because array index is 0-based
 
 
   if (RSVPColIndex == 0)
@@ -33,6 +57,11 @@ function mergeRowsByKeyPreserveAllFormulas() {
     return;
   }
 
+  // this is not the cleanest way to ignore col's we wanna merge
+  // however it gets the job done.
+  // a sligtly better approach would be, to define what each index and column is,
+  // create a allow list of sorts that can be managed as a helper
+  // use the allow list for the filter
   var skipCols = [0, 1, 2, 3,9,11, RSVPColIndex, AttendedColIndex, RSVPColIndex +1]; // A=0, B=1, C=2, D=3, AG=32, AH=33, AI=34 J=9
 
 
@@ -64,20 +93,16 @@ function mergeRowsByKeyPreserveAllFormulas() {
         }
 
         // Merge non-empty values only if not skipped
-        if (!existingValue) {
-          mergedData[key].values[col] = newValue; // Replace empty cell or a cell with '-' in it
-        } else if (existingValue !== newValue && newValue) {
-          if (existingValue === "-")
-          {
-            mergedData[key].values[col] = newValue
-          }
-          else if (newValue === "-"){
-            mergedData[key].values[col] = existingValue
-          }
-          else{
-          mergedData[key].values[col] = existingValue + ", " + newValue; // Concatenate
-          }
+        if (!existingValue || existingValue === "-") {
+          if (newValue && newValue !== "-") {
+            mergedData[key].values[col] = newValue;
+
+
+        } else if (existingValue !== newValue && newValue && newValue !== "-") {
+          mergedData[key].values[col] = existingValue + ", " + newValue;
         }
+        }
+
       }
       // Mark duplicate row for deletion
       rowsToDelete.push(i + 1);
@@ -107,4 +132,7 @@ function mergeRowsByKeyPreserveAllFormulas() {
   rowsToDelete.forEach(function(rowIndex) {
     sheet.deleteRow(rowIndex);
   });
+
+  Logger.log("ending mergeRowsByKeyPreserveAllFormulas");
+
 }
