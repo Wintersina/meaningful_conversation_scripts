@@ -30,6 +30,7 @@ function onOpen() {
         .addItem('Move RSVP2+', 'copyRSVPToCorrectLocationAndPreserveRows')
         .addItem('Move Rows Eventbrite to Contact List', 'moveRowsFromEventBriteImportToContactList')
         .addItem("New Row and Column", 'importNewEventsFromSchedule')
+        .addItem("Move Rows From Facebook Import To Contact List", 'moveRowsFromFaceBookImportToContactList')
         .addToUi();
     }
 

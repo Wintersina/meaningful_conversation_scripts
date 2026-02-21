@@ -65,9 +65,10 @@ function sortRSVPRows() {
 
 
 
-  // Create the sort specification based on columns P to XX (16 to XX) -- xx = any location the col many ends
+  // Create the sort specification based on columns O to XX (15 to XX) -- xx = any location the col many ends
+  col_o = HELPER_CONSTANTS.EVENT_NAMES_START_COL
   let sortSpecs = [];
-  for (let i = 16; i <= nextStepsIndex; i++) {
+  for (let i = col_o; i <= nextStepsIndex; i++) {
     sortSpecs.push({ column: i, ascending: true });  // Adjust to `false` for descending order
   }
   Logger.log("sortSpecs: " + sortSpecs.length);

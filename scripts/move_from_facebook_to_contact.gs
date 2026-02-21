@@ -1,37 +1,30 @@
-/**
- * Moves rows from the Eventbrite Import sheet into the Contact List sheet.
- *
- * PERFORMANCE-OPTIMIZED VERSION
- *
- * Key guarantees:
- * - Bottom-to-top processing to avoid row index corruption.
- * - Batch row insertion per event (fast).
- * - No conditional formatting rules are added, removed, or modified.
- * - Collapsed row groups are expanded once per event before insertion.
- * - RSVP placement prioritizes the LEFTMOST event column (closest to column O).
- * - Attendee rows are inserted TWO rows below the event title.
- */
-function moveRowsFromEventBriteImportToContactList() {
-  const [contactListSheet, eventbriteSheet] = sheetsByName();
+function moveRowsFromFaceBookImportToContactList() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const contactListSheet = ss.getSheetByName(SHEET_NAMES.CONTACT_LIST);
+  const facebookSheet = ss.getSheetByName(SHEET_NAMES.FACEBOOK);
+
+  if (!contactListSheet) throw new Error(ERROR_MESSAGES.CONTACT_LIST_NOT_FOUND);
+  if (!facebookSheet) throw new Error("'FaceBook Import' sheet not found.");
 
   // ----------------------------------------
-  // Guard: exit if Eventbrite has no data
+  // Guard: exit if Facebook has no data
   // ----------------------------------------
-  const ebLastRow = eventbriteSheet.getLastRow();
-  if (ebLastRow <= 1) return;
+  const fbLastRow = facebookSheet.getLastRow();
+  if (fbLastRow <= 1) return;
 
   const contactLastRow = contactListSheet.getLastRow();
   const contactLastCol = contactListSheet.getLastColumn();
 
   // ----------------------------------------
-  // Load Eventbrite data (A..L, rows 2..N)
+  // Load Facebook data (A..C, rows 2..N)
   // ----------------------------------------
-  const eventbriteData = eventbriteSheet
+  const fbData = facebookSheet
     .getRange(
       HELPER_CONSTANTS.FIRST_DATA_ROW,
       1,
-      ebLastRow - 1,
-      HELPER_CONSTANTS.EVENTBRITE_COLUMN_COUNT
+      fbLastRow - 1,
+      HELPER_CONSTANTS.FACEBOOK_COLUMN_COUNT
     )
     .getValues();
 
@@ -68,19 +61,27 @@ function moveRowsFromEventBriteImportToContactList() {
     .build();
 
   // ----------------------------------------
-  // Group Eventbrite rows by cleaned event name
+  // Build a normalized lookup for Contact List Column B (event blocks)
+  // Bottom-most match wins, like Eventbrite logic.
+  // ----------------------------------------
+  const normalizedContactTitles = contactColB.map(v =>
+    normalizeByStrippingWhiteSpaceAtTheEnd(stripParen_(v))
+  );
+
+  // ----------------------------------------
+  // Group Facebook rows by cleaned event name (Title col C)
   // ----------------------------------------
   const groupedEvents = {};
-  eventbriteData.forEach((row, idx) => {
-    const rawEvent = row[10]; // Column K
-    if (!rawEvent) return;
+  fbData.forEach((row, idx) => {
+    const rawTitle = row[2]; // Column C
+    if (!rawTitle) return;
 
-    const cleaned = normalizeString(String(rawEvent))
-      .replace(/\s*\(.*?\)\s*/g, "")
-      .trim();
+    const cleanedTitle = stripParen_(normalizeString(String(rawTitle))).trim();
+    const key = normalizeByStrippingWhiteSpaceAtTheEnd(cleanedTitle);
+    if (!key) return;
 
-    if (!groupedEvents[cleaned]) groupedEvents[cleaned] = [];
-    groupedEvents[cleaned].push({ row, idx });
+    if (!groupedEvents[key]) groupedEvents[key] = [];
+    groupedEvents[key].push({ row, idx, cleanedTitle, rawTitle });
   });
 
   // ----------------------------------------
@@ -88,18 +89,18 @@ function moveRowsFromEventBriteImportToContactList() {
   // ----------------------------------------
   const workItems = [];
 
-  Object.entries(groupedEvents).forEach(([eventName, rows]) => {
-    // Bottom-most matching event block wins
-    const matchIndex = contactColB.lastIndexOf(eventName);
+  Object.entries(groupedEvents).forEach(([eventKey, rows]) => {
+    const matchIndex = normalizedContactTitles.lastIndexOf(eventKey);
     if (matchIndex === -1) return;
 
     const matchRow = matchIndex + 1;
 
-    // Choose LEFTMOST matching event column starting at O
+    // Prefer LEFTMOST event column (starting at O) for RSVP placement
+    const cleanedTitleForHeader = rows[0].cleanedTitle; // stripped version
     const titleCol = findPreferredEventTitleColumn_(
       titlesRow,
-      eventName,
-      15,                  // Column O
+      cleanedTitleForHeader,
+      15,               // Column O
       attendedCol - 1
     );
 
@@ -128,43 +129,66 @@ function moveRowsFromEventBriteImportToContactList() {
     contactListSheet.insertRowsBefore(insertAt, rowCount);
 
     // ----------------------------------------
-    // Insert attendee values (Columns C..)
+    // Build values we can set:
+    // - C First, D Last
+    // - K Platform = FB
+    // - L Original Signup Event Title (rawTitle)
     // ----------------------------------------
-    const values = rows.map(r =>
-      r.row.slice(1, HELPER_CONSTANTS.EVENTBRITE_COLUMN_COUNT)
-    );
+    const firstNames = [];
+    const lastNames = [];
+    const platforms = [];
+    const originalTitles = [];
 
-    contactListSheet
-      .getRange(insertAt, 3, rowCount, values[0].length)
-      .setValues(values);
+    // RSVP values depend on Status
+    const rsvpValues = [];
+
+    rows.forEach(({ row, rawTitle }) => {
+      const fullName = String(row[0] || "").trim(); // Column A
+      const status = String(row[1] || "").trim();   // Column B
+
+      const split = splitName_(fullName);
+      firstNames.push([split.first]);
+      lastNames.push([split.last]);
+
+      platforms.push(["FB"]);
+      originalTitles.push([rawTitle || ""]);
+
+      rsvpValues.push([statusToRsvpValue_(status)]);
+    });
+
+    // Set First/Last (C, D)
+    contactListSheet.getRange(insertAt, 3, rowCount, 1).setValues(firstNames);
+    contactListSheet.getRange(insertAt, 4, rowCount, 1).setValues(lastNames);
+
+    // Set Platform (K=11), Title (L=12)
+    contactListSheet.getRange(insertAt, 11, rowCount, 1).setValues(platforms);
+    contactListSheet.getRange(insertAt, 12, rowCount, 1).setValues(originalTitles);
 
     // ----------------------------------------
     // Insert formulas (batched)
     // ----------------------------------------
     const nameFormulas = [];
     const attendedFormulas = [];
-    const rsvpFormulas = [];
+    const rsvpCountFormulas = [];
 
     for (let i = 0; i < rowCount; i++) {
       const rowNum = insertAt + i;
       nameFormulas.push([FORMULAS.CONCATENATE_NAME(rowNum)]);
       attendedFormulas.push([FORMULAS.COUNT_ATTENDED(rowNum, attendedColLetter)]);
-      rsvpFormulas.push([FORMULAS.COUNT_RSVP(rowNum, attendedColLetter)]);
+      rsvpCountFormulas.push([FORMULAS.COUNT_RSVP(rowNum, attendedColLetter)]);
     }
 
     contactListSheet.getRange(insertAt, 1, rowCount, 1).setFormulas(nameFormulas);
     contactListSheet.getRange(insertAt, attendedCol, rowCount, 1).setFormulas(attendedFormulas);
-    contactListSheet.getRange(insertAt, rsvpCol, rowCount, 1).setFormulas(rsvpFormulas);
+    contactListSheet.getRange(insertAt, rsvpCol, rowCount, 1).setFormulas(rsvpCountFormulas);
 
     // ----------------------------------------
-    // RSVP dropdown + dash fill
+    // RSVP dropdown + dash fill (like Eventbrite)
     // ----------------------------------------
     if (titleCol) {
       const rsvpRange = contactListSheet.getRange(insertAt, titleCol, rowCount, 1);
       rsvpRange.setDataValidation(rsvpValidationRule);
-      rsvpRange.setValues(
-        Array(rowCount).fill([RSVP_DROP_DOWN_CONSTANTS.YES_ATTENDED])
-      );
+      rsvpRange.setValues(rsvpValues);
 
       const dashStart = titleCol + 1;
       const dashEnd = attendedCol - 1;
@@ -185,48 +209,61 @@ function moveRowsFromEventBriteImportToContactList() {
       .setFontFamily(UI_CONSTANTS.FONT_STYLE)
       .setHorizontalAlignment(UI_CONSTANTS.ALIGNMENT_CENTER);
 
-    // Track rows for deletion from Eventbrite
+    // Track rows for deletion from Facebook Import
     rows.forEach(r =>
       rowsToDelete.push(r.idx + HELPER_CONSTANTS.FIRST_DATA_ROW)
     );
   });
 
   // ----------------------------------------
-  // Delete Eventbrite rows bottom → top
+  // Delete Facebook rows bottom → top
   // ----------------------------------------
   rowsToDelete
     .sort((a, b) => b - a)
-    .forEach(r => eventbriteSheet.deleteRow(r));
+    .forEach(r => facebookSheet.deleteRow(r));
 }
 
 /**
- * Expands any collapsed row groups at a given row index.
- * This prevents inserts from landing inside hidden groups.
+ * Strip trailing/inner parenthetical bits like: "Title (Free Event)" -> "Title"
  */
-function expandRowGroupsAtRow_(sheet, row) {
-  try {
-    const depth = sheet.getRowGroupDepth(row);
-    for (let d = depth; d >= 1; d--) {
-      const group = sheet.getRowGroup(row, d);
-      if (group) group.expand();
-    }
-  } catch (e) {
-    // Fail silently if grouping APIs are unavailable
-  }
+function stripParen_(value) {
+  if (!value) return "";
+  return String(value).replace(/\s*\(.*?\)\s*/g, "").trim();
 }
 
 /**
- * Returns the LEFTMOST event column (closest to column O)
- * whose header text matches the given event title.
+ * Split a full name into first + last.
+ * - "Mary" => first="Mary", last=""
+ * - "Mary Jane Tkacz" => first="Mary", last="Jane Tkacz"
  */
-function findPreferredEventTitleColumn_(titlesRow, title, firstCol, lastCol) {
-  const target = String(title || "").trim();
-  if (!target) return null;
+function splitName_(fullName) {
+  const cleaned = String(fullName || "").trim().replace(/\s+/g, " ");
+  if (!cleaned) return { first: "", last: "" };
 
-  for (let c = firstCol - 1; c <= lastCol - 1; c++) {
-    if (titlesRow[c] && String(titlesRow[c]).trim() === target) {
-      return c + 1; // 1-based
-    }
+  const parts = cleaned.split(" ");
+  if (parts.length === 1) return { first: parts[0], last: "" };
+
+  return { first: parts[0], last: parts.slice(1).join(" ") };
+}
+
+/**
+ * Map Facebook status -> your RSVP dropdown value.
+ */
+function statusToRsvpValue_(status) {
+  const s = normalizeByStrippingWhiteSpaceAtTheEnd(status) || "";
+
+  if (s === "maybe" || s === "interested") {
+    return RSVP_DROP_DOWN_CONSTANTS.MAYBE_ATTENDED;
   }
-  return null;
+
+  if (s === "going" || s === "yes") {
+    return RSVP_DROP_DOWN_CONSTANTS.YES_ATTENDED;
+  }
+
+  if (s === "no" || s === "declined" || s === "not going") {
+    return RSVP_DROP_DOWN_CONSTANTS.NO_ATTENDED;
+  }
+
+  // safest default:
+  return RSVP_DROP_DOWN_CONSTANTS.MAYBE_ATTENDED;
 }

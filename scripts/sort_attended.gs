@@ -54,10 +54,11 @@ function sortAttendedRows() {
   // Select the range from column P to XX for the dynamic number of rows
   const range = sheet.getRange(13, 1, numRows, nextStepsIndex);  // XX amount columns (A to XX)
 
-  // Create a sort specification for columns P to XX
+  // Create a sort specification for columns O to XX
   // insert sort criteria
+  // o == 15
   let sortSpecs = [];
-  for (let i = 16; i <= nextStepsIndex; i++) {
+  for (let i = HELPER_CONSTANTS.EVENT_NAMES_START_COL; i <= nextStepsIndex; i++) {
     sortSpecs.push({ column: i, ascending: true });
   }
 

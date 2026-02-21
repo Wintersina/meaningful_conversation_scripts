@@ -67,7 +67,7 @@ function mergeRowsByKeyPreserveAllFormulas() {
 
   // Process rows and merge duplicates in memory
   for (var i = 1; i < data.length; i++) { // Skip header row
-    var key = data[i][0] ? data[i][0].toLowerCase() : null; // Use Column A as the key
+    var key = normalizeByStrippingWhiteSpaceAtTheEnd(data[i][0]) // Use Column A as the key
     if (!key) continue; // Skip empty keys
 
     if (!mergedData[key]) {
