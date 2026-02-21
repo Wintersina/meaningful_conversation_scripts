@@ -8,6 +8,8 @@ function nightlyTrigger() {
   sortAttendedRows()
   sortRSVPRows()
 
+  syncEventsToGoogleCalendar()
+
   Logger.log("ending nightlyTrigger");
 
 }

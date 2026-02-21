@@ -1,0 +1,140 @@
+/**
+ * Syncs events from the Contact List sheet to Google Calendar.
+ * Idempotent — safe to run multiple times without creating duplicates.
+ */
+function syncEventsToGoogleCalendar() {
+  Logger.log("starting syncEventsToGoogleCalendar");
+
+  var calendar = CalendarApp.getDefaultCalendar();
+  var contactListSheet = sheetsByName()[0];
+
+  // Find the "# Events Attended" column in row 5 to know where event columns end
+  var lastCol = contactListSheet.getLastColumn();
+  var row5Values = contactListSheet.getRange(ROW_NUMBERS.ROW_5, 1, 1, lastCol).getValues()[0];
+  var attendedIndex0 = row5Values.indexOf(COL_CONSTANTS.EVENTS_ATTENDED);
+  if (attendedIndex0 === -1) {
+    Logger.log("Could not find '# Events Attended' column. Aborting sync.");
+    return;
+  }
+  var attendedCol1 = attendedIndex0 + 1; // 1-based
+
+  // Event columns: start at col O (15), end just before "# Events Attended"
+  var startCol = HELPER_CONSTANTS.EVENT_NAMES_START_COL; // 15
+  var endCol = attendedCol1 - 1;
+
+  if (endCol < startCol) {
+    Logger.log("No event columns found. Aborting sync.");
+    return;
+  }
+
+  var numCols = endCol - startCol + 1;
+
+  // Batch-read row 6 (dates) and row 7 (titles) across event columns
+  var dates = contactListSheet.getRange(ROW_NUMBERS.ROW_6, startCol, 1, numCols).getValues()[0];
+  var titles = contactListSheet.getRange(ROW_NUMBERS.ROW_7, startCol, 1, numCols).getValues()[0];
+
+  var timeZone = "America/Chicago";
+  var createdCount = 0;
+  var skippedCount = 0;
+
+  for (var i = 0; i < numCols; i++) {
+    var dateValue = dates[i];
+    var titleValue = titles[i];
+
+    if (!titleValue || String(titleValue).trim() === "") {
+      continue;
+    }
+
+    var eventDate = parseEventDate_(dateValue);
+    if (!eventDate) {
+      Logger.log("Skipping column " + (startCol + i) + ": could not parse date '" + dateValue + "'");
+      continue;
+    }
+
+    var title = String(titleValue).trim();
+
+    // Build start (6:30 PM) and end (8:00 PM) in America/Chicago
+    var startTime = buildDateInTimeZone_(eventDate, 18, 30, timeZone);
+    var endTime = buildDateInTimeZone_(eventDate, 20, 0, timeZone);
+
+    // Idempotency check: skip if event already exists on calendar
+    if (calendarEventExists_(calendar, startTime, endTime, title)) {
+      skippedCount++;
+      continue;
+    }
+
+    // Create the event
+    var dateStr = Utilities.formatDate(startTime, timeZone, "MMMM d, yyyy");
+    calendar.createEvent(title, startTime, endTime, {
+      description: "Synced from Contact List sheet — " + dateStr
+    });
+    createdCount++;
+    Logger.log("Created event: " + title + " on " + dateStr);
+  }
+
+  Logger.log("syncEventsToGoogleCalendar complete. Created: " + createdCount + ", Skipped (already exist): " + skippedCount);
+}
+
+/**
+ * Checks if a matching event already exists on the calendar in the given time window.
+ * @param {CalendarApp.Calendar} calendar
+ * @param {Date} startTime
+ * @param {Date} endTime
+ * @param {string} title
+ * @return {boolean}
+ */
+function calendarEventExists_(calendar, startTime, endTime, title) {
+  var events = calendar.getEvents(startTime, endTime);
+  var normalizedTitle = normalizeString(title).toLowerCase();
+
+  for (var j = 0; j < events.length; j++) {
+    var existingTitle = normalizeString(events[j].getTitle()).toLowerCase();
+    if (existingTitle === normalizedTitle) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Parses a date value (Date object or string) into a date-only Date.
+ * Mirrors the pattern from insert_new_col_and_row.gs.
+ * @param {Date|string} value
+ * @return {Date|null} Date with time zeroed out, or null if unparseable
+ */
+function parseEventDate_(value) {
+  if (!value) return null;
+
+  if (value instanceof Date) {
+    return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+
+  if (typeof value === "string") {
+    var parsed = new Date(value);
+    if (!isNaN(parsed)) {
+      return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Builds a Date object at a specific hour/minute in a given timezone.
+ * Uses Utilities.parseDate to correctly handle CST/CDT transitions.
+ * @param {Date} dateOnly - A date with time zeroed out
+ * @param {number} hour - Hour (0-23)
+ * @param {number} minute - Minute (0-59)
+ * @param {string} timeZone - IANA timezone string (e.g. "America/Chicago")
+ * @return {Date}
+ */
+function buildDateInTimeZone_(dateOnly, hour, minute, timeZone) {
+  var year = dateOnly.getFullYear();
+  var month = ("0" + (dateOnly.getMonth() + 1)).slice(-2);
+  var day = ("0" + dateOnly.getDate()).slice(-2);
+  var hourStr = ("0" + hour).slice(-2);
+  var minuteStr = ("0" + minute).slice(-2);
+
+  var dateTimeString = year + "-" + month + "-" + day + " " + hourStr + ":" + minuteStr + ":00";
+  return Utilities.parseDate(dateTimeString, timeZone, "yyyy-MM-dd HH:mm:ss");
+}
