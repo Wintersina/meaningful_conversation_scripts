@@ -29,7 +29,8 @@ function syncEventsToGoogleCalendar() {
 
   var numCols = endCol - startCol + 1;
 
-  // Batch-read row 6 (dates) and row 7 (titles) across event columns
+  // Batch-read row 4 (rooms), row 6 (dates), and row 7 (titles) across event columns
+  var rooms = contactListSheet.getRange(ROW_NUMBERS.ROW_4, startCol, 1, numCols).getValues()[0];
   var dates = contactListSheet.getRange(ROW_NUMBERS.ROW_6, startCol, 1, numCols).getValues()[0];
   var titles = contactListSheet.getRange(ROW_NUMBERS.ROW_7, startCol, 1, numCols).getValues()[0];
 
@@ -52,24 +53,32 @@ function syncEventsToGoogleCalendar() {
     }
 
     var title = String(titleValue).trim();
+    var room = rooms[i] ? String(rooms[i]).trim() : "";
+
+    // Append room number to title if available
+    var calendarTitle = room ? title + " (" + room + ")" : title;
 
     // Build start (6:30 PM) and end (8:00 PM) in America/Chicago
     var startTime = buildDateInTimeZone_(eventDate, 18, 30, timeZone);
     var endTime = buildDateInTimeZone_(eventDate, 20, 0, timeZone);
 
     // Idempotency check: skip if event already exists on calendar
-    if (calendarEventExists_(calendar, startTime, endTime, title)) {
+    if (calendarEventExists_(calendar, startTime, endTime, calendarTitle)) {
       skippedCount++;
       continue;
     }
 
     // Create the event
     var dateStr = Utilities.formatDate(startTime, timeZone, "MMMM d, yyyy");
-    calendar.createEvent(title, startTime, endTime, {
-      description: "Synced from Contact List sheet — " + dateStr
+    var description = "Synced from Contact List sheet — " + dateStr;
+    if (room) {
+      description += "\nRoom: " + room;
+    }
+    calendar.createEvent(calendarTitle, startTime, endTime, {
+      description: description
     });
     createdCount++;
-    Logger.log("Created event: " + title + " on " + dateStr);
+    Logger.log("Created event: " + calendarTitle + " on " + dateStr);
   }
 
   Logger.log("syncEventsToGoogleCalendar complete. Created: " + createdCount + ", Skipped (already exist): " + skippedCount);
