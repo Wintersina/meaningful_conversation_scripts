@@ -346,6 +346,81 @@ function createRSVPvsAttendedComparisonChart(chartSheet, startRow) {
 }
 
 /**
+ * Frequent Attendees Section: Lists everyone who has attended more than 3 times.
+ * Reads the Contact List sheet, finds names where "# Events Attended" > 3,
+ * and writes a sorted table (name, count) to the Data Analysis Graphs sheet.
+ */
+function createFrequentAttendeesSection(chartSheet, startRow) {
+  const [contactListSheet] = sheetsByName();
+
+  const lastCol = contactListSheet.getLastColumn();
+  const lastRow = contactListSheet.getLastRow();
+
+  // Find the "# Events Attended" column from the row-5 header
+  const headerRowValues = contactListSheet.getRange(ROW_NUMBERS.ROW_5, 1, 1, lastCol).getValues()[0];
+  const attendedColIndex0 = headerRowValues.indexOf(COL_CONSTANTS.EVENTS_ATTENDED);
+  if (attendedColIndex0 === -1) {
+    chartSheet.getRange(startRow, 1).setValue("Could not find '# Events Attended' column.");
+    return startRow + 2;
+  }
+  const attendedCol1 = attendedColIndex0 + 1; // convert to 1-based
+
+  // Data rows start at ROW_12; read names (col A) and attended counts together
+  const dataStartRow = ROW_NUMBERS.ROW_12;
+  const numRows = lastRow - dataStartRow + 1;
+  if (numRows <= 0) {
+    chartSheet.getRange(startRow, 1).setValue("No data rows found in Contact List.");
+    return startRow + 2;
+  }
+
+  const namesValues    = contactListSheet.getRange(dataStartRow, 1,           numRows, 1).getValues();
+  const attendedValues = contactListSheet.getRange(dataStartRow, attendedCol1, numRows, 1).getValues();
+
+  // Collect people with attended > 3; deduplicate by name
+  const seen = new Set();
+  const frequentAttendees = [];
+
+  for (let i = 0; i < namesValues.length; i++) {
+    const name = String(namesValues[i][0]).trim();
+    if (!name) continue; // blank rows and section-marker rows (col A is empty for those)
+
+    const attendedRaw = attendedValues[i][0];
+    const attended = typeof attendedRaw === "number" ? attendedRaw : Number(attendedRaw);
+    if (isNaN(attended) || attended < 3) continue;
+
+    if (seen.has(name)) continue; // skip duplicates
+    seen.add(name);
+    frequentAttendees.push([name, attended]);
+  }
+
+  // Section title
+  const titleCell = chartSheet.getRange(startRow, 1);
+  titleCell.setValue("Frequent Attendees (Attended 3 or More Times)");
+  titleCell.setFontSize(12).setFontWeight("bold");
+
+  if (frequentAttendees.length === 0) {
+    chartSheet.getRange(startRow + 1, 1).setValue("No attendees have attended 3 or more times yet.");
+    return startRow + 3;
+  }
+
+  // Sort descending by attended count
+  frequentAttendees.sort((a, b) => b[1] - a[1]);
+
+  // Column headers
+  const headersRange = chartSheet.getRange(startRow + 1, 1, 1, 2);
+  headersRange.setValues([["Name", "Times Attended"]]);
+  headersRange.setFontWeight("bold");
+
+  // Attendee rows
+  const dataRange = chartSheet.getRange(startRow + 2, 1, frequentAttendees.length, 2);
+  dataRange.setValues(frequentAttendees);
+  dataRange.offset(0, 1, frequentAttendees.length, 1).setNumberFormat("0"); // count column
+
+  Logger.log("Frequent attendees section: " + frequentAttendees.length + " people attended 3 or more times");
+  return startRow + 2 + frequentAttendees.length + 2;
+}
+
+/**
  * Main function to create all four analysis charts
  */
 function createRSVPvsAttendanceChart() {
@@ -380,5 +455,8 @@ function createRSVPvsAttendanceChart() {
   // Create Graph 4: Overall Comparison
   currentRow = createRSVPvsAttendedComparisonChart(chartSheet, currentRow);
 
-  Logger.log("All four charts created successfully in 'Data Analysis Graphs' sheet");
+  // Section 5: Frequent Attendees (attended > 3 times)
+  currentRow = createFrequentAttendeesSection(chartSheet, currentRow);
+
+  Logger.log("Dashboard created successfully in 'Data Analysis Graphs' sheet");
 }
