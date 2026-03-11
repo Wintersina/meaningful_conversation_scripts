@@ -31,6 +31,7 @@ function onOpen() {
         .addItem('Move Rows Eventbrite to Contact List', 'moveRowsFromEventBriteImportToContactList')
         .addItem("New Row and Column", 'importNewEventsFromSchedule')
         .addItem("Move Rows From Facebook Import To Contact List", 'moveRowsFromFaceBookImportToContactList')
+        .addItem("Backfill Events Attended & RSVP'd Formulas", 'backfillEventsFormulas')
         .addSeparator()
         .addItem("Generate Data Analysis Graphs", 'createRSVPvsAttendanceChart')
         .addToUi();
