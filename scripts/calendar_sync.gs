@@ -29,10 +29,11 @@ function syncEventsToGoogleCalendar() {
 
   var numCols = endCol - startCol + 1;
 
-  // Batch-read row 4 (rooms), row 6 (dates), and row 7 (titles) across event columns
+  // Batch-read row 4 (rooms), row 6 (dates), row 7 (titles), and row 9 (RSVP counts) across event columns
   var rooms = contactListSheet.getRange(ROW_NUMBERS.ROW_4, startCol, 1, numCols).getValues()[0];
   var dates = contactListSheet.getRange(ROW_NUMBERS.ROW_6, startCol, 1, numCols).getValues()[0];
   var titles = contactListSheet.getRange(ROW_NUMBERS.ROW_7, startCol, 1, numCols).getValues()[0];
+  var rsvpRaw = contactListSheet.getRange(ROW_NUMBERS.ROW_9, startCol, 1, numCols).getValues()[0];
 
   var timeZone = "America/Chicago";
   var createdCount = 0;
@@ -54,6 +55,7 @@ function syncEventsToGoogleCalendar() {
 
     var title = String(titleValue).trim();
     var room = rooms[i] ? String(rooms[i]).trim() : "";
+    var rsvpCount = parseRsvpCount_(rsvpRaw[i]);
 
     // Append room number to title if available
     var calendarTitle = room ? title + " (" + room + ")" : title;
@@ -62,17 +64,40 @@ function syncEventsToGoogleCalendar() {
     var startTime = buildDateInTimeZone_(eventDate, 18, 30, timeZone);
     var endTime = buildDateInTimeZone_(eventDate, 20, 0, timeZone);
 
-    // Idempotency check: skip if event already exists on calendar
-    if (calendarEventExists_(calendar, startTime, endTime, calendarTitle)) {
+    var nowStr = Utilities.formatDate(new Date(), timeZone, "MMM d, yyyy h:mm a");
+
+    // Idempotency check: find existing event by date + title contains
+    var existingEvent = findCalendarEvent_(calendar, startTime, endTime, title);
+    if (existingEvent) {
+      var oldTitle = existingEvent.getTitle();
+      var titleChanged = oldTitle !== calendarTitle;
+
+      var desc = existingEvent.getDescription() || "";
+      var newDesc = updateDescriptionField_(desc, "Room", room || null);
+      newDesc = updateDescriptionField_(newDesc, "RSVPs", rsvpCount !== null ? rsvpCount : null);
+      var descChanged = newDesc !== desc;
+
+      if (titleChanged) {
+        Logger.log("Updating title: '" + oldTitle + "' → '" + calendarTitle + "'");
+        existingEvent.setTitle(calendarTitle);
+      }
+      if (titleChanged || descChanged) {
+        newDesc = updateDescriptionField_(newDesc, "Last synced", nowStr);
+        Logger.log("Updating description for: " + calendarTitle);
+        existingEvent.setDescription(newDesc);
+      }
       skippedCount++;
       continue;
     }
 
     // Create the event
     var dateStr = Utilities.formatDate(startTime, timeZone, "MMMM d, yyyy");
-    var description = "Synced from Contact List sheet — " + dateStr;
+    var description = "Last synced: " + nowStr;
     if (room) {
       description += "\nRoom: " + room;
+    }
+    if (rsvpCount !== null) {
+      description += "\nRSVPs: " + rsvpCount;
     }
     calendar.createEvent(calendarTitle, startTime, endTime, {
       description: description
@@ -85,24 +110,61 @@ function syncEventsToGoogleCalendar() {
 }
 
 /**
- * Checks if a matching event already exists on the calendar in the given time window.
+ * Returns the first calendar event in the time window whose title contains the given title,
+ * or null if none found.
  * @param {CalendarApp.Calendar} calendar
  * @param {Date} startTime
  * @param {Date} endTime
- * @param {string} title
- * @return {boolean}
+ * @param {string} title - Base title without room suffix
+ * @return {CalendarApp.CalendarEvent|null}
  */
-function calendarEventExists_(calendar, startTime, endTime, title) {
+function findCalendarEvent_(calendar, startTime, endTime, title) {
   var events = calendar.getEvents(startTime, endTime);
   var normalizedTitle = normalizeString(title).toLowerCase();
 
   for (var j = 0; j < events.length; j++) {
     var existingTitle = normalizeString(events[j].getTitle()).toLowerCase();
-    if (existingTitle === normalizedTitle) {
-      return true;
+    if (existingTitle.includes(normalizedTitle)) {
+      return events[j];
     }
   }
-  return false;
+  return null;
+}
+
+/**
+ * Updates a labelled line ("Label: value") in a description string in place.
+ * - If value is non-null/non-empty: updates the existing line or appends it.
+ * - If value is null/empty: removes the line cleanly.
+ * @param {string} desc
+ * @param {string} label
+ * @param {*} value
+ * @return {string} Updated description
+ */
+function updateDescriptionField_(desc, label, value) {
+  var pattern = new RegExp("^" + label + ":.*$", "m");
+  var hasValue = value !== null && value !== undefined && String(value).trim() !== "";
+
+  if (hasValue) {
+    var line = label + ": " + value;
+    if (pattern.test(desc)) {
+      return desc.replace(pattern, line);
+    } else {
+      return desc + "\n" + line;
+    }
+  } else {
+    return desc.replace(pattern, "").replace(/\n{2,}/g, "\n").trim();
+  }
+}
+
+/**
+ * Parses an RSVP count from a cell value like "TTL RSVP =42".
+ * @param {*} raw
+ * @return {number|null}
+ */
+function parseRsvpCount_(raw) {
+  if (!raw) return null;
+  var match = String(raw).match(/=\s*(\d+)/);
+  return match ? parseInt(match[1], 10) : null;
 }
 
 /**
