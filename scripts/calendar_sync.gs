@@ -64,7 +64,14 @@ function syncEventsToGoogleCalendar() {
     var startTime = buildDateInTimeZone_(eventDate, 18, 30, timeZone);
     var endTime = buildDateInTimeZone_(eventDate, 20, 0, timeZone);
 
-    var nowStr = Utilities.formatDate(new Date(), timeZone, "MMM d, yyyy h:mm a");
+    var now = new Date();
+    var nowStr = Utilities.formatDate(now, timeZone, "MMM d, yyyy h:mm a");
+    var oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+
+    if (startTime < oneMonthAgo) {
+      Logger.log("Skipping past event (> 1 month old): " + calendarTitle);
+      continue;
+    }
 
     // Idempotency check: find existing event by date + title contains
     var existingEvent = findCalendarEvent_(calendar, startTime, endTime, title);
@@ -78,13 +85,21 @@ function syncEventsToGoogleCalendar() {
       var descChanged = newDesc !== desc;
 
       if (titleChanged) {
-        Logger.log("Updating title: '" + oldTitle + "' → '" + calendarTitle + "'");
-        existingEvent.setTitle(calendarTitle);
+        try {
+          Logger.log("Updating title: '" + oldTitle + "' → '" + calendarTitle + "'");
+          existingEvent.setTitle(calendarTitle);
+        } catch (e) {
+          Logger.log("Could not update title for '" + oldTitle + "' — update it manually in Google Calendar: " + e.message);
+        }
       }
       if (titleChanged || descChanged) {
-        newDesc = updateDescriptionField_(newDesc, "Last synced", nowStr);
-        Logger.log("Updating description for: " + calendarTitle);
-        existingEvent.setDescription(newDesc);
+        try {
+          newDesc = updateDescriptionField_(newDesc, "Last synced", nowStr);
+          Logger.log("Updating description for: " + calendarTitle);
+          existingEvent.setDescription(newDesc);
+        } catch (e) {
+          Logger.log("Could not update description for '" + calendarTitle + "': " + e.message);
+        }
       }
       skippedCount++;
       continue;
