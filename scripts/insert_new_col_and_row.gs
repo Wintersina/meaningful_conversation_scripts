@@ -188,22 +188,52 @@ function importNewEventsFromSchedule() {
   const formulaRow = insertRowIndex + 5;
   const numCols = endColIndex - startColIndex + 1;
 
-  // Build formulas array once (batch set)
-  const formulas = [];
+  // Build formulas for all 3 total rows: Total RSVP'd, Total Attended, Total Attended w/o RSVP
+  const rsvpFormulas = [];
+  const attendedFormulas = [];
+  const attendedNoRsvpFormulas = [];
+
   for (let col = startColIndex; col <= endColIndex; col++) {
     const letter = columnToLetter(col);
-    // NOTE: still uses your existing +/-30 and +4 window; consider replacing with dynamic bounds later.
-    formulas.push([`=iferror(COUNTIF(${letter}${insertRowIndex - 30}:${letter}${insertRowIndex + 4},"RSVP'd: yes*"), "")`]);
+    const rangeStart = insertRowIndex - 30;
+    const rangeEnd = insertRowIndex + 4;
+    rsvpFormulas.push(FORMULAS.TOTAL_RSVPD_FORMULA(letter, rangeStart, rangeEnd));
+    attendedFormulas.push(FORMULAS.TOTAL_ATTENDED_FORMULA(letter, rangeStart, rangeEnd));
+    attendedNoRsvpFormulas.push(FORMULAS.TOTAL_ATTENDED_NO_RSVP_FORMULA(letter, rangeStart, rangeEnd));
   }
 
-  const formulaRange = contactListSheet.getRange(formulaRow, startColIndex, 1, numCols);
-  formulaRange.setFormulas([formulas.map(x => x[0])]); // setFormulas expects 2D row array
+  // Find the Total Attended and Total Attended w/o RSVP rows (they follow Total RSVP'd)
+  // Re-read colB after row insertions since indices shifted
+  const colBValuesUpdated = contactListSheet.getRange(1, 2, contactListSheet.getLastRow(), 1).getValues().flat();
+  const totalAttendedRowIndex = colBValuesUpdated.lastIndexOf(COL_CONSTANTS.TOTAL_ATTENDED) + 1;
+  const totalAttendedNoRsvpRowIndex = colBValuesUpdated.lastIndexOf(COL_CONSTANTS.TOTAL_ATTENDED_NO_RSVP) + 1;
 
-  // Number formatting + center alignment in one shot
+  // Set Total RSVP'd formulas
+  contactListSheet.getRange(formulaRow, startColIndex, 1, numCols).setFormulas([rsvpFormulas]);
+
+  // Set Total Attended formulas (if row exists)
+  if (totalAttendedRowIndex > 0) {
+    contactListSheet.getRange(totalAttendedRowIndex, startColIndex, 1, numCols).setFormulas([attendedFormulas]);
+    contactListSheet.getRange(totalAttendedRowIndex, startColIndex, 1, numCols)
+      .setNumberFormat(UI_CONSTANTS.NUMBER_FORMAT)
+      .setHorizontalAlignment(UI_CONSTANTS.ALIGNMENT_CENTER);
+  }
+
+  // Set Total Attended w/o RSVP formulas (if row exists)
+  if (totalAttendedNoRsvpRowIndex > 0) {
+    contactListSheet.getRange(totalAttendedNoRsvpRowIndex, startColIndex, 1, numCols).setFormulas([attendedNoRsvpFormulas]);
+    contactListSheet.getRange(totalAttendedNoRsvpRowIndex, startColIndex, 1, numCols)
+      .setNumberFormat(UI_CONSTANTS.NUMBER_FORMAT)
+      .setHorizontalAlignment(UI_CONSTANTS.ALIGNMENT_CENTER);
+  }
+
+  // Number formatting + center alignment for Total RSVP'd row
+  const formulaRange = contactListSheet.getRange(formulaRow, startColIndex, 1, numCols);
   formulaRange.setNumberFormat(UI_CONSTANTS.NUMBER_FORMAT).setHorizontalAlignment(UI_CONSTANTS.ALIGNMENT_CENTER);
 
-  // Bottom border under the new Total RSVP row (exclude last column like before)
-  const totalRSVPRowRange = contactListSheet.getRange(formulaRow, 2, 1, contactListSheet.getLastColumn() - 1);
+  // Bottom border under the last total row (exclude last column like before)
+  const bottomBorderRow = totalAttendedNoRsvpRowIndex > 0 ? totalAttendedNoRsvpRowIndex : formulaRow;
+  const totalRSVPRowRange = contactListSheet.getRange(bottomBorderRow, 2, 1, contactListSheet.getLastColumn() - 1);
   totalRSVPRowRange.setBorder(false, false, true, false, false, false, UI_CONSTANTS.BORDER_COLOR, UI_CONSTANTS.BORDER_STYLE);
 
   // ----------------------------

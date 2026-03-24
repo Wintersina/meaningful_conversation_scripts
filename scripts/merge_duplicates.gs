@@ -66,13 +66,21 @@ function mergeRowsByKeyPreserveAllFormulas() {
           formulas[fi][col] = formulas[i][col];
         }
 
-        // Merge values
-        if (!existingValue || existingValue === "-") {
-          if (newValue && newValue !== "-") {
-            data[fi][col] = newValue;
+        // Event columns (O onward): pick by RSVP priority, never concatenate
+        if (col >= HELPER_CONSTANTS.EVENT_NAMES_START_COL - 1) {
+          var winner = pickByRsvpPriority_(existingValue, newValue);
+          if (winner !== undefined) {
+            data[fi][col] = winner;
           }
-        } else if (existingValue !== newValue && newValue && newValue !== "-") {
-          data[fi][col] = existingValue + ", " + newValue;
+        } else {
+          // Non-event columns: original merge logic
+          if (!existingValue || existingValue === "-") {
+            if (newValue && newValue !== "-") {
+              data[fi][col] = newValue;
+            }
+          } else if (existingValue !== newValue && newValue && newValue !== "-") {
+            data[fi][col] = existingValue + ", " + newValue;
+          }
         }
       }
 
@@ -124,4 +132,46 @@ function mergeRowsByKeyPreserveAllFormulas() {
   }
 
   Logger.log("ending mergeRowsByKeyPreserveAllFormulas");
+}
+
+/**
+ * Given two RSVP cell values from duplicate rows, returns the higher-priority one.
+ * Priority (highest first):
+ *   1. attended: yes  (any rsvp prefix)
+ *   2. attended: no   (any rsvp prefix)
+ *   3. attended: ?    (any rsvp prefix)
+ *   4. dash / empty
+ * Returns undefined if neither value is meaningful.
+ */
+function pickByRsvpPriority_(a, b) {
+  // Rank: lower number = higher priority
+  var RSVP_PRIORITY = [
+    RSVP_DROP_DOWN_CONSTANTS.YES_ATTENDED_YES,   // 0
+    RSVP_DROP_DOWN_CONSTANTS.MAYBE_ATTENDED_YES,  // 1
+    RSVP_DROP_DOWN_CONSTANTS.NO_ATTENDED_YES,     // 2
+    RSVP_DROP_DOWN_CONSTANTS.DASH_ATTENDED_YES,   // 3
+    RSVP_DROP_DOWN_CONSTANTS.YES_ATTENDED_NO,     // 4
+    RSVP_DROP_DOWN_CONSTANTS.NO_ATTENDED_NO,      // 5
+    RSVP_DROP_DOWN_CONSTANTS.YES_ATTENDED,        // 6
+    RSVP_DROP_DOWN_CONSTANTS.MAYBE_ATTENDED,      // 7
+    RSVP_DROP_DOWN_CONSTANTS.NO_ATTENDED,         // 8
+    RSVP_DROP_DOWN_CONSTANTS.DASH,                // 9
+    RSVP_DROP_DOWN_CONSTANTS.DOUBLE_DASH          // 10
+  ];
+
+  var aEmpty = !a || a === "-" || a === "--";
+  var bEmpty = !b || b === "-" || b === "--";
+
+  if (aEmpty && bEmpty) return undefined;
+  if (aEmpty) return b;
+  if (bEmpty) return a;
+
+  var aRank = RSVP_PRIORITY.indexOf(a);
+  var bRank = RSVP_PRIORITY.indexOf(b);
+
+  // If a value isn't in the priority list, treat it as lowest
+  if (aRank === -1) aRank = 999;
+  if (bRank === -1) bRank = 999;
+
+  return aRank <= bRank ? a : b;
 }

@@ -28,7 +28,8 @@ const COL_CONSTANTS = {
   EVENTS_RSVPD:"# Events RSVP'd",
   NEXT_STEPS:"Next Steps",
   TOTAL_RSVPD: "Total RSVP'd",
-  // TOTAL_ATTENDED: "# Events RSVP'd",
+  TOTAL_ATTENDED: "Total Attended",
+  TOTAL_ATTENDED_NO_RSVP: "Total Attended w/o RSVP",
   STOP_RSVP: "Stop RSVP",
   RSVP_2_PLUS: "RSVP 2+",
   ATTENDED_PLUS_ONE:"ATTENDED 1+",
@@ -66,7 +67,11 @@ const FORMULAS = {
   COUNT_RSVP: (row, colLetter) => `=IFERROR(COUNTIF(O${row}:${colLetter}${row},"RSVP'd: yes*"),"")`,
   V_LOOKUP:(colLetter) => `=VLOOKUP(${colLetter}${ROW_NUMBERS.ROW_7},'Event IDs'!$B:$C,2,FALSE)`,
   TTL_RSVP:(colLetter) => `="TTL RSVP =" & COUNTIF(${colLetter}12:${colLetter}3000, "*RSVP'D: yes*")`,
-  TTL_ATTND:(colLetter) => `="TTL ATTND =" & COUNTIF(${colLetter}12:${colLetter}3000, "*ATTENDED: yes*")`
+  TTL_ATTND:(colLetter) => `="TTL ATTND =" & COUNTIF(${colLetter}12:${colLetter}3000, "*ATTENDED: yes*")`,
+  // Summary formulas for the Total rows at the bottom of each event block
+  TOTAL_RSVPD_FORMULA:(colLetter, startRow, endRow) => `=IFERROR(COUNTIF(${colLetter}${startRow}:${colLetter}${endRow},"RSVP'd: yes*"),"")`,
+  TOTAL_ATTENDED_FORMULA:(colLetter, startRow, endRow) => `=IFERROR(COUNTIF(${colLetter}${startRow}:${colLetter}${endRow},"*Attended: yes"),"")`,
+  TOTAL_ATTENDED_NO_RSVP_FORMULA:(colLetter, startRow, endRow) => `=IFERROR(COUNTIF(${colLetter}${startRow}:${colLetter}${endRow},"*rsvp'd: no\nattended: yes"),"")`,
 };
 
 
@@ -112,9 +117,9 @@ function normalizeString(str) {
 
 function normalizeByStrippingWhiteSpaceAtTheEnd(str) {
   if (!str) return null;
-  // Convert to string, trim whitespace from ends, and lowercase
+  // Convert to string, trim whitespace from ends, collapse internal spaces, and lowercase
   str = normalizeString(str)
-  return String(str).trim().toLowerCase();
+  return String(str).trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 // function normalizeString(str) {
