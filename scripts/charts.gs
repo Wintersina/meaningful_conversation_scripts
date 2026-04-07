@@ -25,24 +25,6 @@ function extractNumberFromCell(cell) {
 }
 
 /**
- * Helper function to classify day type from a date
- */
-function getDayType(dateCell) {
-  if (dateCell instanceof Date && !isNaN(dateCell)) {
-    const day = dateCell.getDay();
-    return (day === 1) ? "Monday" : (day === 4) ? "Thursday" : "Other";
-  } else {
-    // Try to parse as date string
-    const maybeDate = new Date(String(dateCell));
-    if (!isNaN(maybeDate)) {
-      const day = maybeDate.getDay();
-      return (day === 1) ? "Monday" : (day === 4) ? "Thursday" : "Other";
-    }
-  }
-  return "Unknown";
-}
-
-/**
  * Extract event data from Contact List sheet
  * Returns array of event objects with all relevant data
  */
@@ -76,12 +58,10 @@ function extractEventData() {
     const dateCell = dates[i];
     const rsvpNum = extractNumberFromCell(rsvpRaw[i]);
     const attendNum = extractNumberFromCell(attendedRaw[i]);
-    const dayType = getDayType(dateCell);
 
     events.push({
       name: name,
       date: dateCell instanceof Date ? dateCell : String(dateCell),
-      dayType: dayType,
       rsvp: rsvpNum,
       attended: attendNum,
       difference: Math.abs(rsvpNum - attendNum)
@@ -92,112 +72,54 @@ function extractEventData() {
 }
 
 /**
- * Graph 1: Average RSVP numbers by day (Monday vs Thursday)
- * Creates a column chart comparing average RSVPs
+ * Format a date for display — returns "MM/DD/YYYY" string or the raw value
  */
-function createAverageRSVPByDayChart(chartSheet, startRow) {
-  const events = extractEventData();
-
-  // Filter and calculate averages
-  const mondayEvents = events.filter(e => e.dayType === "Monday");
-  const thursdayEvents = events.filter(e => e.dayType === "Thursday");
-
-  const mondayAvg = mondayEvents.length > 0
-    ? mondayEvents.reduce((sum, e) => sum + e.rsvp, 0) / mondayEvents.length
-    : 0;
-  const thursdayAvg = thursdayEvents.length > 0
-    ? thursdayEvents.reduce((sum, e) => sum + e.rsvp, 0) / thursdayEvents.length
-    : 0;
-
-  // Write data to sheet
-  const headers = ["Day", "Average RSVP", "Event Count"];
-  const data = [
-    headers,
-    ["Monday", mondayAvg, mondayEvents.length],
-    ["Thursday", thursdayAvg, thursdayEvents.length]
-  ];
-
-  chartSheet.getRange(startRow, 1, data.length, headers.length).setValues(data);
-
-  // Format numeric columns as numbers (not dates)
-  chartSheet.getRange(startRow + 1, 2, data.length - 1, 2).setNumberFormat("0.00"); // Average RSVP and Event Count
-
-  // Create chart - using separate series for better labeling
-  const chart = chartSheet.newChart()
-    .setChartType(Charts.ChartType.COLUMN)
-    .addRange(chartSheet.getRange(startRow, 1, 1, 1)) // Day header
-    .addRange(chartSheet.getRange(startRow + 1, 1, 2, 1)) // Day values
-    .addRange(chartSheet.getRange(startRow, 2, 1, 1)) // Average RSVP header
-    .addRange(chartSheet.getRange(startRow + 1, 2, 2, 1)) // Average RSVP values
-    .setPosition(startRow, 5, 0, 0)
-    .setOption("title", "Average RSVP: Monday vs Thursday")
-    .setOption("vAxis", { title: "Average RSVP Count" })
-    .setOption("hAxis", { title: "Day of Week" })
-    .setOption("series", {
-      0: { color: "#4285F4", labelInLegend: "Average RSVP" }
-    })
-    .setOption("legend", { position: "bottom" })
-    .build();
-  chartSheet.insertChart(chart);
-
-  return startRow + data.length + 2; // Return next available row
+function formatDateForDisplay_(dateVal) {
+  if (dateVal instanceof Date && !isNaN(dateVal)) {
+    return (dateVal.getMonth() + 1) + "/" + dateVal.getDate() + "/" + dateVal.getFullYear();
+  }
+  return String(dateVal);
 }
 
 /**
- * Graph 2: Events with closest RSVP to Attendance match (Top 15)
- * Line graph showing top 15 events where RSVP prediction was most accurate
+ * Section 1: Top RSVP'd Events
+ * Bar chart showing events ranked by RSVP count (highest first)
  */
-function createRSVPAccuracyChart(chartSheet, startRow) {
+function createTopRSVPChart(chartSheet, startRow) {
   const events = extractEventData();
 
-  // Sort by smallest difference (best predictions)
-  const sortedEvents = events
-    .filter(e => e.rsvp > 0) // Only include events with RSVPs
-    .sort((a, b) => a.difference - b.difference)
-    .slice(0, 15); // Top 15 most accurate
+  const sorted = events
+    .filter(e => e.rsvp > 0)
+    .sort((a, b) => b.rsvp - a.rsvp)
+    .slice(0, 20);
 
-  if (sortedEvents.length === 0) {
+  if (sorted.length === 0) {
     chartSheet.getRange(startRow, 1).setValue("No events with RSVPs found");
     return startRow + 2;
   }
 
-  // Write data to sheet - include date and day type
-  const headers = ["Event Name", "RSVP", "Attended", "Difference", "Event Date", "Day Type"];
-  const dataRows = sortedEvents.map(e => [
+  const headers = ["Event", "RSVP Count", "Date"];
+  const dataRows = sorted.map(e => [
     e.name,
     e.rsvp,
-    e.attended,
-    e.difference,
-    e.date,
-    e.dayType
+    e.date
   ]);
   const data = [headers, ...dataRows];
 
   chartSheet.getRange(startRow, 1, data.length, headers.length).setValues(data);
-
-  // Format numeric columns as numbers (not dates)
-  chartSheet.getRange(startRow + 1, 2, dataRows.length, 3).setNumberFormat("0"); // RSVP, Attended, Difference
-  // Format date column if they are Date objects
-  if (sortedEvents[0].date instanceof Date) {
-    chartSheet.getRange(startRow + 1, 5, dataRows.length, 1).setNumberFormat("mm/dd/yyyy");
+  chartSheet.getRange(startRow + 1, 2, dataRows.length, 1).setNumberFormat("0");
+  if (sorted[0].date instanceof Date) {
+    chartSheet.getRange(startRow + 1, 3, dataRows.length, 1).setNumberFormat("mm/dd/yyyy");
   }
 
-  // Create line chart - only use first 4 columns for chart
-  const chartRange = chartSheet.getRange(startRow, 1, data.length, 4);
   const chart = chartSheet.newChart()
-    .setChartType(Charts.ChartType.LINE)
-    .addRange(chartRange)
-    .setPosition(startRow, 8, 0, 0)
-    .setOption("title", "Most Accurate RSVP Predictions (Top 15 Events)")
-    .setOption("vAxis", { title: "Count" })
-    .setOption("hAxis", { title: "Event Name", slantedText: true, slantedTextAngle: 45 })
-    .setOption("series", {
-      0: { color: "#4285F4", lineWidth: 2, labelInLegend: "RSVP" },
-      1: { color: "#34A853", lineWidth: 2, labelInLegend: "Attended" },
-      2: { color: "#EA4335", lineWidth: 1, lineDashStyle: [4, 4], labelInLegend: "Difference" }
-    })
-    .setOption("legend", { position: "bottom" })
-    .setOption("curveType", "function")
+    .setChartType(Charts.ChartType.BAR)
+    .addRange(chartSheet.getRange(startRow, 1, data.length, 2))
+    .setPosition(startRow, 5, 0, 0)
+    .setOption("title", "Top RSVP'd Events")
+    .setOption("hAxis", { title: "RSVP Count" })
+    .setOption("series", { 0: { color: "#4285F4" } })
+    .setOption("legend", { position: "none" })
     .build();
   chartSheet.insertChart(chart);
 
@@ -205,20 +127,63 @@ function createRSVPAccuracyChart(chartSheet, startRow) {
 }
 
 /**
- * Graph 3: All Events Timeline sorted by date
- * Line graph showing all events with RSVPs in chronological order
+ * Section 2: Top Attended Events
+ * Bar chart showing events ranked by attendance count (highest first)
+ */
+function createTopAttendedChart(chartSheet, startRow) {
+  const events = extractEventData();
+
+  const sorted = events
+    .filter(e => e.attended > 0)
+    .sort((a, b) => b.attended - a.attended)
+    .slice(0, 20);
+
+  if (sorted.length === 0) {
+    chartSheet.getRange(startRow, 1).setValue("No events with attendance data found");
+    return startRow + 2;
+  }
+
+  const headers = ["Event", "Attended", "Date"];
+  const dataRows = sorted.map(e => [
+    e.name,
+    e.attended,
+    e.date
+  ]);
+  const data = [headers, ...dataRows];
+
+  chartSheet.getRange(startRow, 1, data.length, headers.length).setValues(data);
+  chartSheet.getRange(startRow + 1, 2, dataRows.length, 1).setNumberFormat("0");
+  if (sorted[0].date instanceof Date) {
+    chartSheet.getRange(startRow + 1, 3, dataRows.length, 1).setNumberFormat("mm/dd/yyyy");
+  }
+
+  const chart = chartSheet.newChart()
+    .setChartType(Charts.ChartType.BAR)
+    .addRange(chartSheet.getRange(startRow, 1, data.length, 2))
+    .setPosition(startRow, 5, 0, 0)
+    .setOption("title", "Top Attended Events")
+    .setOption("hAxis", { title: "Attended Count" })
+    .setOption("series", { 0: { color: "#34A853" } })
+    .setOption("legend", { position: "none" })
+    .build();
+  chartSheet.insertChart(chart);
+
+  return startRow + data.length + 2;
+}
+
+/**
+ * Section 3: All Events Timeline sorted by date
+ * Line graph showing RSVP vs Attended over time
  */
 function createAllEventsTimelineChart(chartSheet, startRow) {
   const events = extractEventData();
 
-  // Filter events with RSVPs and sort by date
   const sortedEvents = events
-    .filter(e => e.rsvp > 0) // Only include events with RSVPs
+    .filter(e => e.rsvp > 0)
     .sort((a, b) => {
-      // Sort by date - handle both Date objects and strings
       const dateA = a.date instanceof Date ? a.date : new Date(a.date);
       const dateB = b.date instanceof Date ? b.date : new Date(b.date);
-      return dateA - dateB; // Ascending order (oldest first)
+      return dateA - dateB;
     });
 
   if (sortedEvents.length === 0) {
@@ -226,40 +191,27 @@ function createAllEventsTimelineChart(chartSheet, startRow) {
     return startRow + 2;
   }
 
-  // Write data to sheet - include date and day type
-  const headers = ["Event Name", "RSVP", "Attended", "Difference", "Event Date", "Day Type"];
-  const dataRows = sortedEvents.map(e => [
-    e.name,
-    e.rsvp,
-    e.attended,
-    e.difference,
-    e.date,
-    e.dayType
-  ]);
+  const headers = ["Event Name", "RSVP", "Attended", "Date"];
+  const dataRows = sortedEvents.map(e => [e.name, e.rsvp, e.attended, e.date]);
   const data = [headers, ...dataRows];
 
   chartSheet.getRange(startRow, 1, data.length, headers.length).setValues(data);
-
-  // Format numeric columns as numbers (not dates)
-  chartSheet.getRange(startRow + 1, 2, dataRows.length, 3).setNumberFormat("0"); // RSVP, Attended, Difference
-  // Format date column if they are Date objects
+  chartSheet.getRange(startRow + 1, 2, dataRows.length, 2).setNumberFormat("0");
   if (sortedEvents[0].date instanceof Date) {
-    chartSheet.getRange(startRow + 1, 5, dataRows.length, 1).setNumberFormat("mm/dd/yyyy");
+    chartSheet.getRange(startRow + 1, 4, dataRows.length, 1).setNumberFormat("mm/dd/yyyy");
   }
 
-  // Create line chart - only use first 4 columns for chart
-  const chartRange = chartSheet.getRange(startRow, 1, data.length, 4);
+  const chartRange = chartSheet.getRange(startRow, 1, data.length, 3);
   const chart = chartSheet.newChart()
     .setChartType(Charts.ChartType.LINE)
     .addRange(chartRange)
-    .setPosition(startRow, 8, 0, 0)
-    .setOption("title", "All Events Timeline (Sorted by Date)")
+    .setPosition(startRow, 6, 0, 0)
+    .setOption("title", "All Events Timeline (RSVP vs Attended)")
     .setOption("vAxis", { title: "Count" })
-    .setOption("hAxis", { title: "Event Name", slantedText: true, slantedTextAngle: 45 })
+    .setOption("hAxis", { title: "Event", slantedText: true, slantedTextAngle: 45 })
     .setOption("series", {
       0: { color: "#4285F4", lineWidth: 2, labelInLegend: "RSVP" },
-      1: { color: "#34A853", lineWidth: 2, labelInLegend: "Attended" },
-      2: { color: "#EA4335", lineWidth: 1, lineDashStyle: [4, 4], labelInLegend: "Difference" }
+      1: { color: "#34A853", lineWidth: 2, labelInLegend: "Attended" }
     })
     .setOption("legend", { position: "bottom" })
     .setOption("curveType", "function")
@@ -270,13 +222,11 @@ function createAllEventsTimelineChart(chartSheet, startRow) {
 }
 
 /**
- * Graph 4: Overall RSVP vs Attended comparison
- * Excludes events with zero RSVPs from average calculations
+ * Section 4: Overall RSVP vs Attended summary stats
  */
 function createRSVPvsAttendedComparisonChart(chartSheet, startRow) {
   const events = extractEventData();
 
-  // Filter out events with zero RSVPs
   const eventsWithRSVP = events.filter(e => e.rsvp > 0);
 
   if (eventsWithRSVP.length === 0) {
@@ -284,14 +234,12 @@ function createRSVPvsAttendedComparisonChart(chartSheet, startRow) {
     return startRow + 2;
   }
 
-  // Calculate statistics
   const totalRSVP = eventsWithRSVP.reduce((sum, e) => sum + e.rsvp, 0);
   const totalAttended = eventsWithRSVP.reduce((sum, e) => sum + e.attended, 0);
   const avgRSVP = totalRSVP / eventsWithRSVP.length;
   const avgAttended = totalAttended / eventsWithRSVP.length;
   const attendanceRate = totalRSVP > 0 ? (totalAttended / totalRSVP * 100) : 0;
 
-  // Write summary data
   const headers = ["Metric", "RSVP", "Attended"];
   const data = [
     headers,
@@ -302,53 +250,29 @@ function createRSVPvsAttendedComparisonChart(chartSheet, startRow) {
   ];
 
   chartSheet.getRange(startRow, 1, data.length, headers.length).setValues(data);
+  chartSheet.getRange(startRow + 1, 2, 3, 2).setNumberFormat("0.00");
+  chartSheet.getRange(startRow + 4, 3, 1, 1).setNumberFormat("0.00");
 
-  // Format numeric columns as numbers (not dates)
-  chartSheet.getRange(startRow + 1, 2, 3, 2).setNumberFormat("0.00"); // RSVP and Attended for Total, Average, Count rows
-  chartSheet.getRange(startRow + 4, 3, 1, 1).setNumberFormat("0.00"); // Attendance rate percentage
-
-  // Create comparison chart (using Total and Average rows)
-  const chartRange = chartSheet.getRange(startRow, 1, 3, 3); // Headers + Total + Average
+  const chartRange = chartSheet.getRange(startRow, 1, 3, 3);
   const chart = chartSheet.newChart()
     .setChartType(Charts.ChartType.COLUMN)
     .addRange(chartRange)
     .setPosition(startRow, 5, 0, 0)
-    .setOption("title", "RSVP vs Actual Attendance Comparison\n(Events with RSVPs only)")
+    .setOption("title", "RSVP vs Actual Attendance")
     .setOption("vAxis", { title: "Count" })
-    .setOption("hAxis", { title: "Metric" })
     .setOption("series", {
       0: { color: "#4285F4", labelInLegend: "RSVP" },
       1: { color: "#34A853", labelInLegend: "Attended" }
     })
     .setOption("legend", { position: "bottom" })
-    .setOption("isStacked", false)
     .build();
   chartSheet.insertChart(chart);
 
-  // Write detailed event breakdown below (optional columns)
-  const breakdownStartRow = startRow + data.length + 2;
-  chartSheet.getRange(breakdownStartRow, 1).setValue("Detailed Event Breakdown:");
-  chartSheet.getRange(breakdownStartRow, 1).setFontWeight("bold");
-
-  const breakdownHeaders = ["Event Name", "RSVP", "Attended", "Event Date", "Day Type"];
-  const breakdownRows = eventsWithRSVP.map(e => [e.name, e.rsvp, e.attended, e.date, e.dayType]);
-  const breakdownData = [breakdownHeaders, ...breakdownRows];
-
-  chartSheet.getRange(breakdownStartRow + 1, 1, breakdownData.length, breakdownHeaders.length).setValues(breakdownData);
-  chartSheet.getRange(breakdownStartRow + 2, 2, breakdownRows.length, 2).setNumberFormat("0"); // RSVP and Attended
-
-  // Format date column if they are Date objects
-  if (eventsWithRSVP.length > 0 && eventsWithRSVP[0].date instanceof Date) {
-    chartSheet.getRange(breakdownStartRow + 2, 4, breakdownRows.length, 1).setNumberFormat("mm/dd/yyyy");
-  }
-
-  return breakdownStartRow + breakdownData.length + 2;
+  return startRow + data.length + 2;
 }
 
 /**
- * Frequent Attendees Section: Lists everyone who has attended more than 3 times.
- * Reads the Contact List sheet, finds names where "# Events Attended" > 3,
- * and writes a sorted table (name, count) to the Data Analysis Graphs sheet.
+ * Section 5: Frequent Attendees (attended 3+ times)
  */
 function createFrequentAttendeesSection(chartSheet, startRow) {
   const [contactListSheet] = sheetsByName();
@@ -356,16 +280,14 @@ function createFrequentAttendeesSection(chartSheet, startRow) {
   const lastCol = contactListSheet.getLastColumn();
   const lastRow = contactListSheet.getLastRow();
 
-  // Find the "# Events Attended" column from the row-5 header
   const headerRowValues = contactListSheet.getRange(ROW_NUMBERS.ROW_5, 1, 1, lastCol).getValues()[0];
   const attendedColIndex0 = headerRowValues.indexOf(COL_CONSTANTS.EVENTS_ATTENDED);
   if (attendedColIndex0 === -1) {
     chartSheet.getRange(startRow, 1).setValue("Could not find '# Events Attended' column.");
     return startRow + 2;
   }
-  const attendedCol1 = attendedColIndex0 + 1; // convert to 1-based
+  const attendedCol1 = attendedColIndex0 + 1;
 
-  // Data rows start at ROW_12; read names (col A) and attended counts together
   const dataStartRow = ROW_NUMBERS.ROW_12;
   const numRows = lastRow - dataStartRow + 1;
   if (numRows <= 0) {
@@ -376,24 +298,22 @@ function createFrequentAttendeesSection(chartSheet, startRow) {
   const namesValues    = contactListSheet.getRange(dataStartRow, 1,           numRows, 1).getValues();
   const attendedValues = contactListSheet.getRange(dataStartRow, attendedCol1, numRows, 1).getValues();
 
-  // Collect people with attended > 3; deduplicate by name
   const seen = new Set();
   const frequentAttendees = [];
 
   for (let i = 0; i < namesValues.length; i++) {
     const name = String(namesValues[i][0]).trim();
-    if (!name) continue; // blank rows and section-marker rows (col A is empty for those)
+    if (!name) continue;
 
     const attendedRaw = attendedValues[i][0];
     const attended = typeof attendedRaw === "number" ? attendedRaw : Number(attendedRaw);
     if (isNaN(attended) || attended < 3) continue;
 
-    if (seen.has(name)) continue; // skip duplicates
+    if (seen.has(name)) continue;
     seen.add(name);
     frequentAttendees.push([name, attended]);
   }
 
-  // Section title
   const titleCell = chartSheet.getRange(startRow, 1);
   titleCell.setValue("Frequent Attendees (Attended 3 or More Times)");
   titleCell.setFontSize(12).setFontWeight("bold");
@@ -403,59 +323,53 @@ function createFrequentAttendeesSection(chartSheet, startRow) {
     return startRow + 3;
   }
 
-  // Sort descending by attended count
   frequentAttendees.sort((a, b) => b[1] - a[1]);
 
-  // Column headers
   const headersRange = chartSheet.getRange(startRow + 1, 1, 1, 2);
   headersRange.setValues([["Name", "Times Attended"]]);
   headersRange.setFontWeight("bold");
 
-  // Attendee rows
   const dataRange = chartSheet.getRange(startRow + 2, 1, frequentAttendees.length, 2);
   dataRange.setValues(frequentAttendees);
-  dataRange.offset(0, 1, frequentAttendees.length, 1).setNumberFormat("0"); // count column
+  dataRange.offset(0, 1, frequentAttendees.length, 1).setNumberFormat("0");
 
   Logger.log("Frequent attendees section: " + frequentAttendees.length + " people attended 3 or more times");
   return startRow + 2 + frequentAttendees.length + 2;
 }
 
 /**
- * Main function to create all four analysis charts
+ * Main function to create all analysis charts
  */
 function createRSVPvsAttendanceChart() {
   const [contactListSheet] = sheetsByName();
   const ss = contactListSheet.getParent();
   const chartSheetName = "Data Analysis Graphs";
 
-  // Get or create chart sheet
   let chartSheet = ss.getSheetByName(chartSheetName);
   if (!chartSheet) {
     chartSheet = ss.insertSheet(chartSheetName);
   }
 
-  // Clear previous content
   chartSheet.clear();
 
-  // Add title
   chartSheet.getRange(1, 1).setValue("RSVP & Attendance Analysis Dashboard");
   chartSheet.getRange(1, 1).setFontSize(14).setFontWeight("bold");
 
   let currentRow = 3;
 
-  // Create Graph 1: Average RSVP by Day
-  currentRow = createAverageRSVPByDayChart(chartSheet, currentRow);
+  // Section 1: Top RSVP'd Events
+  currentRow = createTopRSVPChart(chartSheet, currentRow);
 
-  // Create Graph 2: Most Accurate Predictions (Top 15)
-  currentRow = createRSVPAccuracyChart(chartSheet, currentRow);
+  // Section 2: Top Attended Events
+  currentRow = createTopAttendedChart(chartSheet, currentRow);
 
-  // Create Graph 3: All Events Timeline (Sorted by Date)
+  // Section 3: All Events Timeline
   currentRow = createAllEventsTimelineChart(chartSheet, currentRow);
 
-  // Create Graph 4: Overall Comparison
+  // Section 4: Overall Comparison Stats
   currentRow = createRSVPvsAttendedComparisonChart(chartSheet, currentRow);
 
-  // Section 5: Frequent Attendees (attended > 3 times)
+  // Section 5: Frequent Attendees
   currentRow = createFrequentAttendeesSection(chartSheet, currentRow);
 
   Logger.log("Dashboard created successfully in 'Data Analysis Graphs' sheet");

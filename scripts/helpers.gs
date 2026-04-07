@@ -4,6 +4,7 @@ const SHEET_NAMES = {
   CONTACT_LIST: "Contact List"
 };
 SHEET_NAMES.FACEBOOK = "FaceBook Import";
+SHEET_NAMES.SIGNUP = "STL MO Barcode (signup sheet)";
 
 const ERROR_MESSAGES = {
   CONTACT_LIST_NOT_FOUND: "'Contact List' sheet not found.",
