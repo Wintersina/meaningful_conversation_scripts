@@ -81,6 +81,7 @@ function markAttendedYes_(currentValue) {
 
 /**
  * Preloads Contact List data for matching.
+ * Uses a single bulk read (cols A-G) instead of 5 separate getRange calls.
  * Returns an object with arrays indexed by contact row (0-based from ROW_12).
  */
 function preloadContactData_(contactListSheet) {
@@ -91,18 +92,26 @@ function preloadContactData_(contactListSheet) {
 
   if (numRows <= 0) return null;
 
-  // Read names (col A), first names (col C), last names (col D), emails (col F), phones (col G)
-  var names = contactListSheet.getRange(dataStartRow, 1, numRows, 1).getValues();
-  var firstNames = contactListSheet.getRange(dataStartRow, 3, numRows, 1).getValues();
-  var lastNames = contactListSheet.getRange(dataStartRow, 4, numRows, 1).getValues();
-  var emails = contactListSheet.getRange(dataStartRow, 6, numRows, 1).getValues();
-  var phones = contactListSheet.getRange(dataStartRow, 7, numRows, 1).getValues();
+  // Single bulk read: columns A through G (7 columns) for all contact rows
+  var bulkData = contactListSheet.getRange(dataStartRow, 1, numRows, 7).getValues();
 
-  // Read event dates from Row 6 and find event columns
-  var headerRow5 = contactListSheet.getRange(ROW_NUMBERS.ROW_5, 1, 1, lastCol).getValues()[0];
-  var attendedColIndex = headerRow5.indexOf(COL_CONSTANTS.EVENTS_ATTENDED);
+  // Extract columns from bulk data (0-based: A=0, C=2, D=3, F=5, G=6)
+  var names = [];
+  var firstNames = [];
+  var lastNames = [];
+  var emails = [];
+  var phones = [];
+
+  for (var i = 0; i < bulkData.length; i++) {
+    names.push([bulkData[i][0]]);
+    firstNames.push([bulkData[i][2]]);
+    lastNames.push([bulkData[i][3]]);
+    emails.push([bulkData[i][5]]);
+    phones.push([bulkData[i][6]]);
+  }
+
+  // Read event dates from Row 6
   var startCol = HELPER_CONSTANTS.EVENT_NAMES_START_COL; // O = 15
-
   var eventDates = contactListSheet.getRange(ROW_NUMBERS.ROW_6, startCol, 1, lastCol - startCol + 1).getValues()[0];
 
   return {
@@ -115,14 +124,102 @@ function preloadContactData_(contactListSheet) {
     startCol: startCol,
     dataStartRow: dataStartRow,
     numRows: numRows,
-    attendedColIndex: attendedColIndex,
     lastCol: lastCol
   };
 }
 
 /**
+ * Lightweight version for the form trigger — finds today's event column,
+ * then only loads contact data for rows that have a value in that column.
+ * This avoids scanning all 3000+ rows for every form submission.
+ *
+ * Returns null if no event column matches the date, or an object with:
+ *   - candidates: array of { sheetRow, name, firstName, lastName, email, phone, rsvpValue }
+ *   - resolvedEventCol: the 1-based column index for today's event
+ */
+function preloadCandidatesForDate_(contactListSheet, targetDate) {
+  var lastRow = contactListSheet.getLastRow();
+  var lastCol = contactListSheet.getLastColumn();
+  var dataStartRow = ROW_NUMBERS.ROW_12;
+  var numRows = lastRow - dataStartRow + 1;
+
+  if (numRows <= 0) return null;
+
+  // Find the event column for this specific date
+  var startCol = HELPER_CONSTANTS.EVENT_NAMES_START_COL;
+  var eventDates = contactListSheet.getRange(ROW_NUMBERS.ROW_6, startCol, 1, lastCol - startCol + 1).getValues()[0];
+
+  var eventCol = -1;
+  if (targetDate instanceof Date && !isNaN(targetDate.getTime())) {
+    var tY = targetDate.getFullYear();
+    var tM = targetDate.getMonth();
+    var tD = targetDate.getDate();
+
+    for (var i = 0; i < eventDates.length; i++) {
+      var d = eventDates[i];
+      if (d instanceof Date && d.getFullYear() === tY && d.getMonth() === tM && d.getDate() === tD) {
+        eventCol = startCol + i;
+        break;
+      }
+    }
+  }
+
+  if (eventCol === -1) return null;
+
+  // Read today's event column to find which rows have RSVP values
+  var eventColValues = contactListSheet.getRange(dataStartRow, eventCol, numRows, 1).getValues();
+
+  // Collect row indices that have any value in the event column
+  var candidateIndices = []; // 0-based offsets from dataStartRow
+  for (var i = 0; i < eventColValues.length; i++) {
+    var val = eventColValues[i][0];
+    if (val && val !== "-" && val !== "--") {
+      candidateIndices.push(i);
+    }
+  }
+
+  // Also read all contact data (A-G) in one call, but only build candidate objects
+  // for rows that have an RSVP value — keeps the search list small
+  var bulkData = contactListSheet.getRange(dataStartRow, 1, numRows, 7).getValues();
+
+  var candidates = [];
+  for (var j = 0; j < candidateIndices.length; j++) {
+    var idx = candidateIndices[j];
+    candidates.push({
+      sheetRow: dataStartRow + idx, // 1-based
+      name: bulkData[idx][0],
+      firstName: bulkData[idx][2],
+      lastName: bulkData[idx][3],
+      email: bulkData[idx][5],
+      phone: bulkData[idx][6],
+      rsvpValue: eventColValues[idx][0]
+    });
+  }
+
+  // Also keep the full bulk data for fallback matching (someone who showed up
+  // but has no RSVP — their cell is empty, so they won't be in candidates)
+  var allRows = [];
+  for (var i = 0; i < bulkData.length; i++) {
+    allRows.push({
+      sheetRow: dataStartRow + i,
+      name: bulkData[i][0],
+      firstName: bulkData[i][2],
+      lastName: bulkData[i][3],
+      email: bulkData[i][5],
+      phone: bulkData[i][6]
+    });
+  }
+
+  return {
+    candidates: candidates,
+    allRows: allRows,
+    resolvedEventCol: eventCol
+  };
+}
+
+/**
  * Finds the event column (1-based) whose Row 6 date matches the signup date.
- * Compares year/month/day only.
+ * Compares year/month/day only. Used by the batch/manual flow.
  */
 function findEventColumnByDate_(contactData, signupDate) {
   if (!(signupDate instanceof Date)) {
@@ -149,6 +246,7 @@ function findEventColumnByDate_(contactData, signupDate) {
 /**
  * Finds the best matching contact row for a signup entry.
  * Returns the 1-based sheet row number, or -1 if no match.
+ * Used by the batch/manual flow (scans all rows).
  *
  * Priority: email → phone → name
  */
@@ -208,6 +306,69 @@ function findContactMatch_(contactData, signupName, signupEmail, signupPhone) {
   }
 
   return -1;
+}
+
+/**
+ * Searches a list of row objects for a match against signup data.
+ * Used by the optimized trigger flow.
+ * Returns the matching row object, or null.
+ *
+ * Priority: email → phone → name
+ */
+function findMatchInList_(rows, signupName, signupEmail, signupPhone) {
+  var normSignupName = normalizeByStrippingWhiteSpaceAtTheEnd(signupName);
+  var normSignupEmail = signupEmail ? String(signupEmail).trim().toLowerCase() : "";
+  var normSignupPhone = normalizePhone_(signupPhone);
+
+  // Pass 1: Email
+  if (normSignupEmail) {
+    for (var i = 0; i < rows.length; i++) {
+      var contactEmail = String(rows[i].email || "").toLowerCase();
+      if (contactEmail && contactEmail.indexOf(normSignupEmail) !== -1) {
+        return rows[i];
+      }
+    }
+  }
+
+  // Pass 2: Phone
+  if (normSignupPhone) {
+    for (var i = 0; i < rows.length; i++) {
+      var contactPhone = normalizePhone_(rows[i].phone);
+      if (contactPhone && contactPhone === normSignupPhone) {
+        return rows[i];
+      }
+    }
+  }
+
+  // Pass 3: Name
+  if (normSignupName) {
+    for (var i = 0; i < rows.length; i++) {
+      var contactName = normalizeByStrippingWhiteSpaceAtTheEnd(rows[i].name);
+      if (contactName && contactName === normSignupName) {
+        return rows[i];
+      }
+    }
+
+    // Pass 3b: First+last swap
+    var parts = normSignupName.split(" ");
+    if (parts.length >= 2) {
+      var sFirst = parts[0];
+      var sLast = parts[parts.length - 1];
+
+      for (var i = 0; i < rows.length; i++) {
+        var cFirst = normalizeByStrippingWhiteSpaceAtTheEnd(rows[i].firstName);
+        var cLast = normalizeByStrippingWhiteSpaceAtTheEnd(rows[i].lastName);
+        if (!cFirst || !cLast) continue;
+
+        if ((cFirst === sFirst && cLast === sLast) ||
+            (cFirst === sLast && cLast === sFirst)) {
+          return rows[i];
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -382,19 +543,63 @@ function onSignupFormSubmit(e) {
     ", phone=" + signupRow[SIGNUP_COLS.PHONE] +
     ", timestamp=" + signupRow[SIGNUP_COLS.TIMESTAMP]);
 
-  var [contactListSheet] = sheetsByName();
-  var contactData = preloadContactData_(contactListSheet);
-  if (!contactData) {
-    Logger.log("No contact data to match against");
+  // Parse the signup date to find today's event column directly
+  var signupTimestamp = signupRow[SIGNUP_COLS.TIMESTAMP];
+  var signupDate = (signupTimestamp instanceof Date) ? signupTimestamp : new Date(signupTimestamp);
+
+  if (isNaN(signupDate.getTime())) {
+    Logger.log("Could not parse signup timestamp: " + signupTimestamp);
     return;
   }
 
-  var found = processSignupRow_(contactListSheet, contactData, signupRow);
-  if (found) {
-    Logger.log("Form submit: match found and attendance marked");
-  } else {
-    Logger.log("Form submit: no match found for " + signupRow[SIGNUP_COLS.NAME]);
+  var signupName = signupRow[SIGNUP_COLS.NAME];
+  var signupEmail = signupRow[SIGNUP_COLS.EMAIL];
+  var signupPhone = signupRow[SIGNUP_COLS.PHONE];
+
+  if (!signupName) {
+    Logger.log("No name in signup row — skipping");
+    return;
   }
+
+  var [contactListSheet] = sheetsByName();
+  var data = preloadCandidatesForDate_(contactListSheet, signupDate);
+  if (!data) {
+    Logger.log("No event column found for date: " + signupDate + " — skipping");
+    return;
+  }
+
+  var eventCol = data.resolvedEventCol;
+
+  // First: try to match against only rows that have an RSVP for today's event
+  // (small list — typically 10-30 people)
+  var match = findMatchInList_(data.candidates, signupName, signupEmail, signupPhone);
+
+  if (match) {
+    var newValue = markAttendedYes_(match.rsvpValue);
+    if (newValue !== match.rsvpValue) {
+      contactListSheet.getRange(match.sheetRow, eventCol).setValue(newValue);
+      Logger.log("Marked attended (from candidates): " + signupName + " → row " + match.sheetRow);
+    } else {
+      Logger.log("Already attended: " + signupName + " → row " + match.sheetRow);
+    }
+    updatePhoneIfNeeded_(contactListSheet, match.sheetRow, signupPhone);
+    return;
+  }
+
+  // Fallback: search ALL rows (person exists in contact list but has no RSVP for today)
+  var fallbackMatch = findMatchInList_(data.allRows, signupName, signupEmail, signupPhone);
+
+  if (fallbackMatch) {
+    var currentValue = contactListSheet.getRange(fallbackMatch.sheetRow, eventCol).getValue();
+    var newValue = markAttendedYes_(currentValue);
+    contactListSheet.getRange(fallbackMatch.sheetRow, eventCol).setValue(newValue);
+    Logger.log("Marked attended (no prior RSVP): " + signupName + " → row " + fallbackMatch.sheetRow);
+    updatePhoneIfNeeded_(contactListSheet, fallbackMatch.sheetRow, signupPhone);
+    return;
+  }
+
+  // TODO: Insert new row with rsvp'd: no / attended: yes
+  Logger.log("NO MATCH FOUND for: " + signupName + " (email: " + signupEmail + ", phone: " + signupPhone + ")");
 }
 
 /**
