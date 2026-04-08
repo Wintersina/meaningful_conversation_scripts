@@ -67,6 +67,14 @@ function markNoShows() {
         values[r][0] = RSVP_DROP_DOWN_CONSTANTS.YES_ATTENDED_NO;
         updated = true;
         totalUpdated++;
+      } else if (values[r][0] === RSVP_DROP_DOWN_CONSTANTS.MAYBE_ATTENDED) {
+        values[r][0] = RSVP_DROP_DOWN_CONSTANTS.NO_ATTENDED_NO;
+        updated = true;
+        totalUpdated++;
+      } else if (values[r][0] === RSVP_DROP_DOWN_CONSTANTS.NO_ATTENDED) {
+        values[r][0] = RSVP_DROP_DOWN_CONSTANTS.NO_ATTENDED_NO;
+        updated = true;
+        totalUpdated++;
       }
     }
 
