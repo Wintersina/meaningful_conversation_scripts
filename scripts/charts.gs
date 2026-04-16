@@ -55,7 +55,7 @@ function extractEventData() {
     });
   }
 
-  return events;
+  return events
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
