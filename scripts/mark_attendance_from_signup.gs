@@ -52,7 +52,9 @@ function formatPhoneWithDashes_(phone) {
  * If empty/dash/no value, returns NO_ATTENDED_YES.
  */
 function markAttendedYes_(currentValue) {
-  if (!currentValue || currentValue === "-" || currentValue === "--") {
+  // Robust empty detection — handles null, undefined, empty string, whitespace-only, dash
+  var trimmed = currentValue == null ? "" : String(currentValue).trim();
+  if (!trimmed || trimmed === "-" || trimmed === "--") {
     return RSVP_DROP_DOWN_CONSTANTS.NO_ATTENDED_YES;
   }
 
@@ -71,11 +73,11 @@ function markAttendedYes_(currentValue) {
   }
 
   // Already attended: yes — no change needed
-  if (String(currentValue).toLowerCase().indexOf("attended: yes") !== -1) {
+  if (trimmed.toLowerCase().indexOf("attended: yes") !== -1) {
     return currentValue;
   }
 
-  // Fallback
+  // Fallback: matched person but unrecognized cell value — treat as no RSVP, mark attended
   return RSVP_DROP_DOWN_CONSTANTS.NO_ATTENDED_YES;
 }
 
@@ -254,11 +256,13 @@ function findContactMatch_(contactData, signupName, signupEmail, signupPhone) {
   var normSignupName = normalizeByStrippingWhiteSpaceAtTheEnd(signupName);
   var normSignupEmail = signupEmail ? String(signupEmail).trim().toLowerCase() : "";
   var normSignupPhone = normalizePhone_(signupPhone);
+  // Spaceless version for "MaryBeth" vs "mary beth" matching
+  var spacelessSignupName = normSignupName ? normSignupName.replace(/\s/g, "") : "";
 
   // Pass 1: Email match (if signup has an email)
   if (normSignupEmail) {
     for (var i = 0; i < contactData.numRows; i++) {
-      var contactEmail = String(contactData.emails[i][0] || "").toLowerCase();
+      var contactEmail = String(contactData.emails[i][0] == null ? "" : contactData.emails[i][0]).trim().toLowerCase();
       if (contactEmail && contactEmail.indexOf(normSignupEmail) !== -1) {
         return contactData.dataStartRow + i;
       }
@@ -279,7 +283,15 @@ function findContactMatch_(contactData, signupName, signupEmail, signupPhone) {
   if (normSignupName) {
     for (var i = 0; i < contactData.numRows; i++) {
       var contactName = normalizeByStrippingWhiteSpaceAtTheEnd(contactData.names[i][0]);
-      if (contactName && contactName === normSignupName) {
+      if (!contactName) continue;
+
+      // Exact normalized match
+      if (contactName === normSignupName) {
+        return contactData.dataStartRow + i;
+      }
+
+      // Spaceless match: "marybeth" === "marybeth" even if one was "mary beth"
+      if (spacelessSignupName && contactName.replace(/\s/g, "") === spacelessSignupName) {
         return contactData.dataStartRow + i;
       }
     }
@@ -319,11 +331,12 @@ function findMatchInList_(rows, signupName, signupEmail, signupPhone) {
   var normSignupName = normalizeByStrippingWhiteSpaceAtTheEnd(signupName);
   var normSignupEmail = signupEmail ? String(signupEmail).trim().toLowerCase() : "";
   var normSignupPhone = normalizePhone_(signupPhone);
+  var spacelessSignupName = normSignupName ? normSignupName.replace(/\s/g, "") : "";
 
   // Pass 1: Email
   if (normSignupEmail) {
     for (var i = 0; i < rows.length; i++) {
-      var contactEmail = String(rows[i].email || "").toLowerCase();
+      var contactEmail = String(rows[i].email == null ? "" : rows[i].email).trim().toLowerCase();
       if (contactEmail && contactEmail.indexOf(normSignupEmail) !== -1) {
         return rows[i];
       }
@@ -344,7 +357,15 @@ function findMatchInList_(rows, signupName, signupEmail, signupPhone) {
   if (normSignupName) {
     for (var i = 0; i < rows.length; i++) {
       var contactName = normalizeByStrippingWhiteSpaceAtTheEnd(rows[i].name);
-      if (contactName && contactName === normSignupName) {
+      if (!contactName) continue;
+
+      // Exact normalized match
+      if (contactName === normSignupName) {
+        return rows[i];
+      }
+
+      // Spaceless match: "marybeth" === "marybeth"
+      if (spacelessSignupName && contactName.replace(/\s/g, "") === spacelessSignupName) {
         return rows[i];
       }
     }
@@ -428,13 +449,16 @@ function processSignupRow_(contactListSheet, contactData, signupRow) {
   // Update attendance in the correct event column
   var cell = contactListSheet.getRange(contactRow, eventCol);
   var currentValue = cell.getValue();
+  var currentTrimmed = currentValue == null ? "" : String(currentValue).trim();
   var newValue = markAttendedYes_(currentValue);
 
-  if (newValue !== currentValue) {
+  Logger.log("Cell value for " + signupName + " at row " + contactRow + ", col " + columnToLetter(eventCol) + ": [" + currentTrimmed + "] → [" + newValue + "]");
+
+  if (currentTrimmed.toLowerCase().indexOf("attended: yes") !== -1) {
+    Logger.log("Already attended: " + signupName + " → row " + contactRow);
+  } else {
     cell.setValue(newValue);
     Logger.log("Marked attended: " + signupName + " → row " + contactRow + ", col " + columnToLetter(eventCol));
-  } else {
-    Logger.log("Already attended: " + signupName + " → row " + contactRow);
   }
 
   // Update phone if needed

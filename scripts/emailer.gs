@@ -2,7 +2,7 @@ function sendEmails() {
   // ——— CONFIG ————————————————————————————————————————————————————————
   var CONFIG = {
     MODE: "dry", // "dry" | "test" | "actual"
-    SUBJECT: "Meaningful Conversations Moving Back to Mondays Starting January",
+    SUBJECT: "To all Meaningful Conversations Participants:",
 
     // Message body source (Google Doc)
     DOC_ID: EMAILER_KEYS.docId, // required
@@ -25,7 +25,17 @@ function sendEmails() {
     // If true, only send to rows where column E == "repeat attendee" (case-insensitive)
     FILTER_REPEAT_ATTENDEES: false,
     REPEAT_FLAG_COL: 4, // E
-    REPEAT_FLAG_VALUE: "repeat attendee"
+    REPEAT_FLAG_VALUE: "repeat attendee",
+
+    // If true, only send to people who have an RSVP/attendance value in the
+    // event column matching FILTER_EVENT_TITLE. Matches event title in Row 7
+    // (normalized, case-insensitive). Cells with "-", "--", or empty are skipped.
+    FILTER_BY_EVENT: true,
+    FILTER_EVENT_TITLE: "One God, Many Paths",  // e.g. "A Divine Connection to Nature"
+
+    // If true, skip emails that were already sent with the same SUBJECT in a previous run.
+    // Different subjects are treated as separate sends (idempotent per email+subject).
+    SKIP_ALREADY_SENT: true
   };
   // Note: Requires COL_CONSTANTS.EMAIL_START and COL_CONSTANTS.STOP_EMAIL markers
   // placed in the Name column (CONFIG.COL_NAME). Processing will start AFTER the
@@ -57,18 +67,29 @@ function sendEmails() {
   // Fix minor typo: use COL_EMAIL
   // (Leaving the above call intact but reassigning here keeps the minimal-change spirit.)
   if (CONFIG.MODE !== "test") {
+    // Resolve event column index if filtering by event
+    var eventColIdx = -1;
+    if (CONFIG.FILTER_BY_EVENT && CONFIG.FILTER_EVENT_TITLE) {
+      eventColIdx = findEventColumnByTitle_(contactSheet, CONFIG.FILTER_EVENT_TITLE);
+      if (eventColIdx === -1) {
+        throw new Error('Event title not found in Row 7: "' + CONFIG.FILTER_EVENT_TITLE + '"');
+      }
+      Logger.log("Filtering by event: \"" + CONFIG.FILTER_EVENT_TITLE + "\" (column " + columnToLetter(eventColIdx + 1) + ")");
+    }
+
     recipients = buildUniqueRecipientsFromSheet_(
       contactSheet,
       CONFIG.COL_NAME,
       CONFIG.COL_EMAIL,
       CONFIG.FILTER_REPEAT_ATTENDEES,
       CONFIG.REPEAT_FLAG_COL,
-      CONFIG.REPEAT_FLAG_VALUE
+      CONFIG.REPEAT_FLAG_VALUE,
+      eventColIdx
     );
   }
 
-  // 4) Determine previously sent emails (skip in actual/dry)
-  var alreadySent = buildSentSet_(tracking);
+  // 4) Determine previously sent emails for this subject (optionally skip)
+  var alreadySent = CONFIG.SKIP_ALREADY_SENT ? buildSentSet_(tracking, CONFIG.SUBJECT) : new Set();
 
   // 5) Dispatch per-mode
   if (CONFIG.MODE === "dry") {
@@ -140,17 +161,42 @@ function buildTestRecipients_(emails) {
 }
 
 /**
+ * Finds the 0-based column index in the Contact List whose Row 7 title
+ * matches the given event title (case-insensitive, normalized).
+ * Returns -1 if not found.
+ */
+function findEventColumnByTitle_(sheet, title) {
+  var lastCol = sheet.getLastColumn();
+  var startCol = HELPER_CONSTANTS.EVENT_NAMES_START_COL; // O = 15
+  if (lastCol < startCol) return -1;
+
+  var titles = sheet.getRange(ROW_NUMBERS.ROW_7, 1, 1, lastCol).getValues()[0];
+  var normTarget = normalizeByStrippingWhiteSpaceAtTheEnd(title);
+
+  for (var i = startCol - 1; i < titles.length; i++) { // 0-based
+    var normTitle = normalizeByStrippingWhiteSpaceAtTheEnd(titles[i]);
+    if (normTitle && normTitle === normTarget) {
+      return i; // 0-based column index
+    }
+  }
+
+  return -1;
+}
+
+/**
  * Build recipients honoring two markers in the Name column:
  *  - COL_CONSTANTS.EMAIL_START: start sending AFTER this row
  *  - COL_CONSTANTS.STOP_EMAIL : stop sending BEFORE this row
  *
  * If EMAIL_START appears after STOP_EMAIL, abort the run.
  *
- * New behavior (optional):
- *  If filterRepeat is true, only include rows where data[r][repeatColIdx] equals repeatValue
- *  (case-insensitive, trimmed).
+ * Optional filters:
+ *  - If filterRepeat is true, only include rows where data[r][repeatColIdx] equals repeatValue
+ *    (case-insensitive, trimmed).
+ *  - If eventColIdx >= 0, only include rows that have a non-empty, non-dash value
+ *    in that column (people who registered/attended for that event).
  */
-function buildUniqueRecipientsFromSheet_(sheet, nameColIdx, emailColIdx, filterRepeat, repeatColIdx, repeatValue) {
+function buildUniqueRecipientsFromSheet_(sheet, nameColIdx, emailColIdx, filterRepeat, repeatColIdx, repeatValue, eventColIdx) {
   var data = sheet.getDataRange().getValues();
   var emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -191,6 +237,9 @@ function buildUniqueRecipientsFromSheet_(sheet, nameColIdx, emailColIdx, filterR
   var shouldFilter = !!filterRepeat;
   var repeatTarget = (repeatValue || "").toString().trim().toLowerCase();
 
+  // Event column filter
+  var shouldFilterEvent = (eventColIdx !== undefined && eventColIdx >= 0);
+
   // Collect unique recipients within [startIdx, endIdx]
   var map = new Map();
   for (var r = startIdx; r <= endIdx; r++) {
@@ -202,21 +251,51 @@ function buildUniqueRecipientsFromSheet_(sheet, nameColIdx, emailColIdx, filterR
       if (cellVal !== repeatTarget) continue;
     }
 
+    // Optional event column filter: skip rows with no RSVP/attendance for this event
+    if (shouldFilterEvent) {
+      var eventVal = (row[eventColIdx] || "").toString().trim();
+      if (!eventVal || eventVal === "-" || eventVal === "--") continue;
+    }
+
     var nameCell = (row[nameColIdx] || "").toString().trim();
     var email = (row[emailColIdx] || "").toString().trim();
-    if (email && emailRegex.test(email) && !map.has(email)) {
-      var first = nameCell ? nameCell.split(/\s+/)[0] : "";
-      map.set(email, first);
+
+    // Handle multi-email cells (comma-separated) — add each valid email
+    var emails = email.split(/[,;]+/);
+    for (var e = 0; e < emails.length; e++) {
+      var singleEmail = emails[e].trim();
+      if (singleEmail && emailRegex.test(singleEmail) && !map.has(singleEmail)) {
+        var first = nameCell ? nameCell.split(/\s+/)[0] : "";
+        map.set(singleEmail, first);
+      }
     }
   }
+
+  if (shouldFilterEvent) {
+    Logger.log("Event filter: " + map.size + " recipients with RSVP/attendance in event column");
+  }
+
   return map;
 }
 
-function buildSentSet_(trackingSheet) {
+/**
+ * Builds a Set of emails that were already sent with a specific subject.
+ * Matches on email (col A) + status "Sent" (col B) + subject (col H).
+ * Case-insensitive subject comparison for safety.
+ */
+function buildSentSet_(trackingSheet, subject) {
   var vals = trackingSheet.getDataRange().getValues();
   var sent = new Set();
+  var normSubject = (subject || "").toString().trim().toLowerCase();
+
   for (var r = 1; r < vals.length; r++) {
-    if ((vals[r][0] + "") && (vals[r][1] + "") === "Sent") sent.add(vals[r][0] + "");
+    var email = (vals[r][0] || "").toString().trim();
+    var status = (vals[r][1] || "").toString().trim();
+    var rowSubject = (vals[r][7] || "").toString().trim().toLowerCase(); // col H = subject
+
+    if (email && status === "Sent" && rowSubject === normSubject) {
+      sent.add(email);
+    }
   }
   return sent;
 }
