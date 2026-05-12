@@ -41,7 +41,12 @@ function mergeRowsByKeyPreserveAllFormulas() {
   // Set gives O(1) lookup vs array's O(n) — matters inside the inner loop
   const skipColsSet = new Set([0, 1, 2, 3, 9, 11, RSVPColIndex, AttendedColIndex, RSVPColIndex + 1]);
 
-  var mergedData   = {}; // key → { dataIndex, dirty }
+  // mergedData[key] is an ARRAY of candidate primary rows sharing the same A-key.
+  // A duplicate merges into the first candidate whose F and G are compatible
+  // (equal, or either side empty — matching the conditional-formatting formula).
+  // This means two rows with the same A but conflicting non-empty F or G become
+  // two separate primaries instead of falsely merging.
+  var mergedData   = {}; // key → [ { dataIndex, fVal, gVal, dirty }, ... ]
   var rowsToDelete = []; // 1-based sheet row numbers of duplicates
 
   // ── Pass 1: merge all duplicates in memory ────────────────────────────────
@@ -49,11 +54,26 @@ function mergeRowsByKeyPreserveAllFormulas() {
     var key = normalizeByStrippingWhiteSpaceAtTheEnd(data[i][0]);
     if (!key) continue;
 
-    if (!mergedData[key]) {
-      mergedData[key] = { dataIndex: i, dirty: false };
+    var fVal = data[i][5]; // column F
+    var gVal = data[i][6]; // column G
+
+    var candidates = mergedData[key];
+    var matched    = null;
+    if (candidates) {
+      for (var c = 0; c < candidates.length; c++) {
+        if (fgCompatible_(candidates[c].fVal, fVal, candidates[c].gVal, gVal)) {
+          matched = candidates[c];
+          break;
+        }
+      }
+    }
+
+    if (!matched) {
+      if (!candidates) candidates = mergedData[key] = [];
+      candidates.push({ dataIndex: i, fVal: fVal, gVal: gVal, dirty: false });
     } else {
-      var fi = mergedData[key].dataIndex;
-      mergedData[key].dirty = true; // this row received at least one merge
+      var fi = matched.dataIndex;
+      matched.dirty = true; // this row received at least one merge
 
       for (var col = 0; col < data[i].length; col++) {
         if (skipColsSet.has(col)) continue;
@@ -73,7 +93,10 @@ function mergeRowsByKeyPreserveAllFormulas() {
             data[fi][col] = winner;
           }
         } else {
-          // Non-event columns: original merge logic
+          // Non-event columns: original merge logic.
+          // For F/G specifically, populated > empty falls into the first branch,
+          // and equal-populated values skip the concat branch — so F and G end up
+          // holding the non-empty value without concatenation.
           if (!existingValue || existingValue === "-") {
             if (newValue && newValue !== "-") {
               data[fi][col] = newValue;
@@ -84,12 +107,21 @@ function mergeRowsByKeyPreserveAllFormulas() {
         }
       }
 
+      // Update the candidate's F/G so subsequent rows compare against the
+      // now-populated values (empty + populated → populated takes precedence).
+      if (isEmptyFgVal_(matched.fVal) && !isEmptyFgVal_(fVal)) matched.fVal = fVal;
+      if (isEmptyFgVal_(matched.gVal) && !isEmptyFgVal_(gVal)) matched.gVal = gVal;
+
       rowsToDelete.push(i + 1); // 1-based sheet row
     }
   }
 
   // ── Pass 2: write back only dirty rows (rows that had duplicates merged in) ──
-  Object.values(mergedData).forEach(function(entry) {
+  var allEntries = [];
+  Object.values(mergedData).forEach(function(candidates) {
+    candidates.forEach(function(entry) { allEntries.push(entry); });
+  });
+  allEntries.forEach(function(entry) {
     if (!entry.dirty) return; // skip rows that had no duplicates
 
     var i      = entry.dataIndex;
@@ -174,4 +206,19 @@ function pickByRsvpPriority_(a, b) {
   if (bRank === -1) bRank = 999;
 
   return aRank <= bRank ? a : b;
+}
+
+// Treats null/undefined and the empty string as "empty" for F/G wildcard logic,
+// mirroring the conditional-formatting formula's `$F12=""` check.
+function isEmptyFgVal_(v) {
+  return v == null || v === "";
+}
+
+// F and G are compatible for merging when each side is either equal or empty —
+// i.e. the formula's ($F1=$F12) + ($F1="") + ($F12="") > 0 evaluated for both
+// columns. Strict equality (no normalization) to match the sheet formula.
+function fgCompatible_(aF, bF, aG, bG) {
+  var fOk = aF === bF || isEmptyFgVal_(aF) || isEmptyFgVal_(bF);
+  var gOk = aG === bG || isEmptyFgVal_(aG) || isEmptyFgVal_(bG);
+  return fOk && gOk;
 }
