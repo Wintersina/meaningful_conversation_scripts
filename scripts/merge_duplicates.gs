@@ -1,6 +1,7 @@
 function mergeRowsByKeyPreserveAllFormulas() {
 
 /**
+ OLD:formatting =AND(LEN(TRIM($A12))>0, SUMPRODUCT((TRIM($A$1:$A$10207)=TRIM($A12))*1)>1)
  * Merges duplicate rows in the sheet while preserving all formulas.
  *
  * This function:
