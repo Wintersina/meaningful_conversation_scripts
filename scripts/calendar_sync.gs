@@ -57,6 +57,8 @@ function syncEventsToGoogleCalendar() {
     var room = rooms[i] ? String(rooms[i]).trim() : "";
     var rsvpCount = parseRsvpCount_(rsvpRaw[i]);
 
+    Logger.log("RSVP DIAG col " + (startCol + i) + " '" + title + "': raw=" + JSON.stringify(rsvpRaw[i]) + ", parsed=" + rsvpCount);
+
     // Append room number to title if available
     var calendarTitle = room ? title + " (" + room + ")" : title;
 
@@ -75,6 +77,13 @@ function syncEventsToGoogleCalendar() {
 
     // Idempotency check: find existing event by date + title contains
     var existingEvent = findCalendarEvent_(calendar, startTime, endTime, title);
+    if (existingEvent && existingEvent.getTitle().indexOf("(Free Event)") !== -1) {
+      var staleTitle = existingEvent.getTitle();
+      Logger.log("Deleting externally-managed event: '" + staleTitle + "' — will recreate");
+      var staleId = existingEvent.getId().replace(/@google\.com$/, "");
+      Calendar.Events.remove(calendar.getId(), staleId);
+      existingEvent = null;
+    }
     if (existingEvent) {
       var oldTitle = existingEvent.getTitle();
       var titleChanged = oldTitle !== calendarTitle;
@@ -84,22 +93,16 @@ function syncEventsToGoogleCalendar() {
       newDesc = updateDescriptionField_(newDesc, "RSVPs", rsvpCount !== null ? rsvpCount : null);
       var descChanged = newDesc !== desc;
 
-      if (titleChanged) {
-        try {
-          Logger.log("Updating title: '" + oldTitle + "' → '" + calendarTitle + "'");
-          existingEvent.setTitle(calendarTitle);
-        } catch (e) {
-          Logger.log("Could not update title for '" + oldTitle + "' — update it manually in Google Calendar: " + e.message);
-        }
-      }
       if (titleChanged || descChanged) {
-        try {
-          newDesc = updateDescriptionField_(newDesc, "Last synced", nowStr);
-          Logger.log("Updating description for: " + calendarTitle);
-          existingEvent.setDescription(newDesc);
-        } catch (e) {
-          Logger.log("Could not update description for '" + calendarTitle + "': " + e.message);
+        newDesc = updateDescriptionField_(newDesc, "Last synced", nowStr);
+        var patch = {};
+        if (titleChanged) {
+          patch.summary = calendarTitle;
+          Logger.log("Updating title: '" + oldTitle + "' → '" + calendarTitle + "'");
         }
+        patch.description = newDesc;
+        Logger.log("Updating description for: " + calendarTitle);
+        patchCalendarEvent_(calendar, existingEvent, patch);
       }
       skippedCount++;
       continue;
@@ -144,6 +147,20 @@ function findCalendarEvent_(calendar, startTime, endTime, title) {
     }
   }
   return null;
+}
+
+/**
+ * Patches an existing event via the Calendar advanced service.
+ * Bypasses CalendarApp's stricter setters, which throw "Action not allowed"
+ * on events created by external integrations even when the caller owns them.
+ * Requires the Calendar advanced service to be enabled in the Apps Script editor.
+ * @param {CalendarApp.Calendar} calendar
+ * @param {CalendarApp.CalendarEvent} event
+ * @param {Object} patch - Calendar v3 Event resource fragment (e.g. {summary, description})
+ */
+function patchCalendarEvent_(calendar, event, patch) {
+  var eventId = event.getId().replace(/@google\.com$/, "");
+  Calendar.Events.patch(patch, calendar.getId(), eventId);
 }
 
 /**
