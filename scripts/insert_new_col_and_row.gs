@@ -112,12 +112,35 @@ function importNewEventsFromSchedule() {
   templateRange.copyTo(newColRange, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
 
   // ----------------------------
-  // 4) Set P6 = Q6 + 7 days  (Date row)
+  // 4) Set P6 = Q6 + 7 days, skipping any OFF/skip-word week(s) in between.
+  //    e.g. if Q6 is 03/23 and 03/30 is an OFF row in the schedule,
+  //    the new event lands on 04/06 (Q6 + 14), not 04/06's predecessor.
   // ----------------------------
   const q6 = contactListSheet.getRange(ROW_NUMBERS.ROW_6, templateColIndex).getValue();
   if (q6 instanceof Date) {
-    const newDate = new Date(q6);
-    newDate.setDate(newDate.getDate() + 7);
+    // Collect day-only timestamps for every OFF/skip-word row in the schedule.
+    const offDayTimes = new Set();
+    scheduleData.forEach(([date, title]) => {
+      if (!title) return;
+      if (!SCHEDULE_SHEET_CONSTANTS.SKIP_WORDS.includes(localNormalizeString(title))) return;
+      const d = parseDate(date);
+      if (d) offDayTimes.add(d.getTime());
+    });
+
+    let weeksToAdd = 1;
+    let newDate;
+    while (true) {
+      newDate = new Date(q6);
+      newDate.setDate(newDate.getDate() + 7 * weeksToAdd);
+      const dayOnly = new Date(newDate.getFullYear(), newDate.getMonth(), newDate.getDate()).getTime();
+      if (!offDayTimes.has(dayOnly)) break;
+      weeksToAdd++;
+      if (weeksToAdd > 10) break; // safety net for runaway data
+    }
+
+    if (weeksToAdd > 1) {
+      Logger.log("Skipped " + (weeksToAdd - 1) + " OFF week(s); new date set " + weeksToAdd + " week(s) after Q6.");
+    }
     contactListSheet.getRange(ROW_NUMBERS.ROW_6, newColIndex).setValue(newDate);
   }
 
