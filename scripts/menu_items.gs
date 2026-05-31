@@ -34,6 +34,8 @@ function onOpen() {
         .addItem("Backfill Events Attended & RSVP'd Formulas", 'backfillEventsFormulas')
         .addItem("Mark No-Shows", 'markNoShows')
         .addItem("Mark Attendance from Signup Sheet", 'markAttendanceFromSignupSheet')
+        .addItem("Sync Events to Google Calendar", 'syncEventsToGoogleCalendar')
+        .addItem("Consolidate Duplicate Calendar Events", 'consolidateExistingCalendarDuplicates')
         .addSeparator()
         .addItem("Generate Data Analysis Graphs", 'createRSVPvsAttendanceChart')
         .addToUi();
