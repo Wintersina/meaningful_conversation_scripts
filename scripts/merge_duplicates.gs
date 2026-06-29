@@ -97,12 +97,15 @@ function mergeRowsByKeyPreserveAllFormulas() {
           // Non-event columns: original merge logic.
           // For F/G specifically, populated > empty falls into the first branch,
           // and equal-populated values skip the concat branch — so F and G end up
-          // holding the non-empty value without concatenation.
+          // holding the non-empty value without concatenation. The concat guard
+          // uses loose equality so a case/whitespace-only difference (e.g. the
+          // same email with a different capitalization) keeps the primary's
+          // value instead of producing "a@x.com, A@x.com".
           if (!existingValue || existingValue === "-") {
             if (newValue && newValue !== "-") {
               data[fi][col] = newValue;
             }
-          } else if (existingValue !== newValue && newValue && newValue !== "-") {
+          } else if (!eqLoose_(existingValue, newValue) && newValue && newValue !== "-") {
             data[fi][col] = existingValue + ", " + newValue;
           }
         }
@@ -215,11 +218,21 @@ function isEmptyFgVal_(v) {
   return v == null || v === "";
 }
 
+// Case- and whitespace-insensitive equality for the F/G identity columns.
+// Mirrors the row-key normalization (normalizeByStrippingWhiteSpaceAtTheEnd),
+// so the merge gate and the actual merge agree: the same email with a
+// different capitalization (b.s.klump@ vs B.s.klump@) is treated as equal.
+function eqLoose_(a, b) {
+  return String(a == null ? "" : a).trim().toLowerCase() ===
+         String(b == null ? "" : b).trim().toLowerCase();
+}
+
 // F and G are compatible for merging when each side is either equal or empty —
 // i.e. the formula's ($F1=$F12) + ($F1="") + ($F12="") > 0 evaluated for both
-// columns. Strict equality (no normalization) to match the sheet formula.
+// columns. Uses loose equality (case/whitespace-insensitive) so trivial casing
+// differences in F/G don't split one person into two un-merged primaries.
 function fgCompatible_(aF, bF, aG, bG) {
-  var fOk = aF === bF || isEmptyFgVal_(aF) || isEmptyFgVal_(bF);
-  var gOk = aG === bG || isEmptyFgVal_(aG) || isEmptyFgVal_(bG);
+  var fOk = isEmptyFgVal_(aF) || isEmptyFgVal_(bF) || eqLoose_(aF, bF);
+  var gOk = isEmptyFgVal_(aG) || isEmptyFgVal_(bG) || eqLoose_(aG, bG);
   return fOk && gOk;
 }
