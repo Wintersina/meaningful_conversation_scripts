@@ -39,8 +39,22 @@ function mergeRowsByKeyPreserveAllFormulas() {
 
   const attendedColLetter = columnToLetter(AttendedColIndex + 1);
 
-  // Set gives O(1) lookup vs array's O(n) — matters inside the inner loop
-  const skipColsSet = new Set([0, 1, 2, 3, 9, 11, RSVPColIndex, AttendedColIndex, RSVPColIndex + 1]);
+  // Columns that must NOT be merged/concatenated — the primary (top) row's value wins.
+  // SIGNUP_EVENT_TITLE (L) and SIGNUP_EVENT_CODE (M) are kept as-is so codes/titles
+  // don't keep concatenating and growing on every merge.
+  // Set gives O(1) lookup vs array's O(n) — matters inside the inner loop.
+  const skipColsSet = new Set([
+    COLUMN_INDEX.FULL_NAME_KEY,       // A — merge key
+    COLUMN_INDEX.NAME_DISPLAY,        // B
+    COLUMN_INDEX.FIRST_NAME,          // C
+    COLUMN_INDEX.LAST_NAME,           // D
+    COLUMN_INDEX.SIGNUP_DATE_TIME,    // J
+    COLUMN_INDEX.SIGNUP_EVENT_TITLE,  // L — keep original top-row title
+    COLUMN_INDEX.SIGNUP_EVENT_CODE,   // M — keep original top-row code
+    RSVPColIndex,
+    AttendedColIndex,
+    RSVPColIndex + 1
+  ]);
 
   // mergedData[key] is an ARRAY of candidate primary rows sharing the same A-key.
   // A duplicate merges into the first candidate whose F and G are compatible

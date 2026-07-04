@@ -38,6 +38,25 @@ const COL_CONSTANTS = {
   EMAIL_START:"Start Email"
 }
 
+// 0-based column indices into the Contact List row arrays (data[i][n]).
+// Mirrors the sheet layout A..N so merge/skip logic reads by name, not magic numbers.
+const COLUMN_INDEX = {
+  FULL_NAME_KEY: 0,        // A — =CONCATENATE(First, " ", Last); the merge key
+  NAME_DISPLAY: 1,         // B — full-name display / total-row label
+  FIRST_NAME: 2,           // C
+  LAST_NAME: 3,            // D
+  STATUS: 4,               // E
+  EMAIL: 5,                // F
+  PHONE: 6,                // G
+  NEIGHBORHOOD: 7,         // H
+  AGE: 8,                  // I — AGE? (approximate)
+  SIGNUP_DATE_TIME: 9,     // J — Original Signup Date & Time
+  SIGNUP_PLATFORM: 10,     // K — Original Signup Platform (FB/MU/EB/etc.)
+  SIGNUP_EVENT_TITLE: 11,  // L — Original Signup Event Title
+  SIGNUP_EVENT_CODE: 12,   // M — Original Signup Event Code
+  DESCRIPTION: 13          // N
+};
+
 const RSVP_DROP_DOWN_CONSTANTS = {
   DASH: "-",
   DOUBLE_DASH: "--",
@@ -122,38 +141,6 @@ function normalizeByStrippingWhiteSpaceAtTheEnd(str) {
   str = normalizeString(str)
   return String(str).trim().replace(/\s+/g, " ").toLowerCase();
 }
-
-// function normalizeString(str) {
-//   if (!str) return "";
-
-//   // Convert to string if not already
-//   str = String(str);
-
-//   // Convert to lowercase for case-insensitive matching
-//   str = str.toLowerCase();
-
-//   // Normalize apostrophes and quotes
-//   str = str.replace(/[''‚‛′‵`´]/g, "'");
-//   str = str.replace(/[""„‟"]/g, '"');
-
-//   // Normalize dashes and hyphens
-//   str = str.replace(/[–—―−]/g, "-");
-
-//   // Normalize spaces (including non-breaking spaces)
-//   str = str.replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, " ");
-
-//   // Remove multiple spaces and trim
-//   str = str.replace(/\s+/g, " ").trim();
-
-//   // Remove accents/diacritics
-//   str = str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-
-//   // Remove common punctuation that might be inconsistent
-//   // Keep essential punctuation like & and -
-//   str = str.replace(/[.,;:!?]/g, "");
-
-//   return str;
-// }
 
 function sheetsByName() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
