@@ -1,8 +1,8 @@
 function sendEmails() {
   // ——— CONFIG ————————————————————————————————————————————————————————
   var CONFIG = {
-    MODE: "dry", // "dry" | "test" | "actual"
-    SUBJECT: "To all Meaningful Conversations Participants:",
+    MODE: "test", // "dry" | "test" | "actual"
+    SUBJECT: "Reminder: No MCSTL Gathering Tonight (7/6)",
 
     // Message body source (Google Doc)
     DOC_ID: EMAILER_KEYS.docId, // required
@@ -30,12 +30,28 @@ function sendEmails() {
     // If true, only send to people who have an RSVP/attendance value in the
     // event column matching FILTER_EVENT_TITLE. Matches event title in Row 7
     // (normalized, case-insensitive). Cells with "-", "--", or empty are skipped.
-    FILTER_BY_EVENT: true,
+    FILTER_BY_EVENT: false,
     FILTER_EVENT_TITLE: "One God, Many Paths",  // e.g. "A Divine Connection to Nature"
 
     // If true, skip emails that were already sent with the same SUBJECT in a previous run.
     // Different subjects are treated as separate sends (idempotent per email+subject).
-    SKIP_ALREADY_SENT: true
+    SKIP_ALREADY_SENT: true,
+
+    // If true, send batched emails addressed to many recipients at once instead
+    // of a separate email per recipient. By default recipients go in BCC so their
+    // addresses stay private from each other (set BATCH_RECIPIENT_MODE to "to" to
+    // make everyone visible to each other).
+    BATCH_SINGLE_EMAIL: true,
+    BATCH_RECIPIENT_MODE: "bcc", // "bcc" (hidden) | "to" (everyone visible)
+
+    // Max recipients per batched message. Apps Script caps total recipients
+    // (to + cc + bcc combined) at 50 per message for BOTH consumer and Workspace
+    // accounts; the separate daily quota is 100 recipients/day (consumer) or
+    // 1,500/day (Workspace). Batches larger than this are split into multiple
+    // messages, each with its own tracking row. This is clamped to the 50/msg
+    // hard cap below (BCC mode reserves 1 slot for the To address), so it can't
+    // be set too high. Lower it only if you still hit "Limit Exceeded".
+    BATCH_SIZE: 45
   };
   // Note: Requires COL_CONSTANTS.EMAIL_START and COL_CONSTANTS.STOP_EMAIL markers
   // placed in the Name column (CONFIG.COL_NAME). Processing will start AFTER the
@@ -92,14 +108,22 @@ function sendEmails() {
   var alreadySent = CONFIG.SKIP_ALREADY_SENT ? buildSentSet_(tracking, CONFIG.SUBJECT) : new Set();
 
   // 5) Dispatch per-mode
-  if (CONFIG.MODE === "dry") {
+  // Test mode never skips already-sent (it's meant for repeated verification).
+  var skipSet = (CONFIG.MODE === "test") ? new Set() : alreadySent;
+
+  if (!["dry", "test", "actual"].includes(CONFIG.MODE)) {
+    throw new Error('Unknown MODE "' + CONFIG.MODE + '" (use "dry" | "test" | "actual")');
+  }
+
+  if (CONFIG.BATCH_SINGLE_EMAIL) {
+    // Batched sends (BCC/To per BATCH_RECIPIENT_MODE), split into BATCH_SIZE chunks.
+    batchFlow_(recipients, tracking, message, attach, CONFIG.SUBJECT, skipSet, CONFIG.MODE, CONFIG.BATCH_RECIPIENT_MODE, CONFIG.BATCH_SIZE);
+  } else if (CONFIG.MODE === "dry") {
     dryRunFlow_(recipients, tracking, message, attach, CONFIG.SUBJECT, alreadySent);
   } else if (CONFIG.MODE === "test") {
     testRunFlow_(recipients, tracking, message, attach, CONFIG.SUBJECT);
   } else if (CONFIG.MODE === "actual") {
     actualRunFlow_(recipients, tracking, message, attach, CONFIG.SUBJECT, alreadySent);
-  } else {
-    throw new Error('Unknown MODE "' + CONFIG.MODE + '" (use "dry" | "test" | "actual")');
   }
 
   Logger.log("Emails processed. Mode=" + CONFIG.MODE + ", attach_pdf=" + !!attach);
@@ -130,13 +154,49 @@ function ensureTrackingSheet_(ss, name) {
   return sh;
 }
 
+/**
+ * Loads the message body from a Google Doc as BOTH plain text and HTML.
+ * - text: doc.getBody().getText() — used as the plain-text fallback part.
+ * - html: the doc exported as HTML — preserves paragraph spacing, bold, links, etc.
+ *   getText() alone drops the doc's paragraph spacing, which is why earlier emails
+ *   arrived with every line jammed together and no gaps between paragraphs.
+ */
 function loadMessageFromDoc_(docId) {
   try {
     var doc = DocumentApp.openById(docId);
-    return doc.getBody().getText();
+    return { text: doc.getBody().getText(), html: exportDocAsHtml_(docId) };
   } catch (e) {
     throw new Error("Cannot access the message doc: " + e);
   }
+}
+
+/**
+ * Exports a Google Doc's contents as HTML via the Docs export endpoint,
+ * authenticated with the script's OAuth token. Returns the HTML string.
+ */
+function exportDocAsHtml_(docId) {
+  var url = "https://docs.google.com/feeds/download/documents/export/Export?id=" +
+            encodeURIComponent(docId) + "&exportFormat=html";
+  var resp = UrlFetchApp.fetch(url, {
+    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+  if (resp.getResponseCode() !== 200) {
+    throw new Error("Doc HTML export failed (HTTP " + resp.getResponseCode() + ")");
+  }
+  return resp.getContentText();
+}
+
+/**
+ * Normalizes an email body into { text, html }. Accepts either a plain string
+ * (html omitted) or an object from loadMessageFromDoc_. Keeps send helpers robust
+ * regardless of which form the caller passes.
+ */
+function asEmailContent_(content) {
+  if (content && typeof content === "object") {
+    return { text: content.text || "", html: content.html || null };
+  }
+  return { text: String(content || ""), html: null };
 }
 
 function loadOptionalPdf_(pdfId) {
@@ -282,6 +342,10 @@ function buildUniqueRecipientsFromSheet_(sheet, nameColIdx, emailColIdx, filterR
  * Builds a Set of emails that were already sent with a specific subject.
  * Matches on email (col A) + status "Sent" (col B) + subject (col H).
  * Case-insensitive subject comparison for safety.
+ *
+ * The Email cell may hold a single address (per-recipient rows) or many addresses
+ * stacked newline/comma-separated (batch rows), so each cell is split and every
+ * address is registered — keeping SKIP_ALREADY_SENT correct in both modes.
  */
 function buildSentSet_(trackingSheet, subject) {
   var vals = trackingSheet.getDataRange().getValues();
@@ -289,12 +353,15 @@ function buildSentSet_(trackingSheet, subject) {
   var normSubject = (subject || "").toString().trim().toLowerCase();
 
   for (var r = 1; r < vals.length; r++) {
-    var email = (vals[r][0] || "").toString().trim();
+    var emailCell = (vals[r][0] || "").toString().trim();
     var status = (vals[r][1] || "").toString().trim();
     var rowSubject = (vals[r][7] || "").toString().trim().toLowerCase(); // col H = subject
 
-    if (email && status === "Sent" && rowSubject === normSubject) {
-      sent.add(email);
+    if (emailCell && status === "Sent" && rowSubject === normSubject) {
+      emailCell.split(/[\n,;]+/).forEach(function(e) {
+        var trimmed = e.trim();
+        if (trimmed) sent.add(trimmed);
+      });
     }
   }
   return sent;
@@ -324,15 +391,124 @@ function safeSendEmail_(email, subject, body, attachObj) {
       return { ok: false, error: "Rate limit reached before send" };
     }
   }
+  var content = asEmailContent_(body);
   var options = {};
+  if (content.html) options.htmlBody = content.html;
   if (attachObj && attachObj.blob) options.attachments = [attachObj.blob];
 
   try {
-    MailApp.sendEmail(email, subject, body, options);
+    MailApp.sendEmail(email, subject, content.text, options);
     return { ok: true, error: null };
   } catch (e) {
     return { ok: false, error: (e && e.message) ? e.message : "Unknown error" };
   }
+}
+
+/**
+ * Sends ONE email to a list of recipients at once.
+ * - recipientMode "bcc": To is the sending account, everyone else is BCC'd (addresses hidden).
+ * - recipientMode "to" : all addresses go in the To field (everyone sees each other).
+ * Quota is measured in recipients, so a batch of N counts as N (plus 1 for the To self in bcc mode).
+ */
+function safeSendBatchEmail_(emails, subject, body, attachObj, recipientMode) {
+  var isBcc = (recipientMode !== "to"); // default to bcc for privacy
+  var recipientCount = emails.length + (isBcc ? 1 : 0); // +1 for the To self in bcc mode
+
+  if (typeof MailApp.getRemainingDailyQuota === "function") {
+    var quota = MailApp.getRemainingDailyQuota();
+    if (quota < recipientCount) {
+      return { ok: false, error: "Rate limit: need " + recipientCount + " recipients but quota is " + quota };
+    }
+  }
+
+  var content = asEmailContent_(body);
+  var options = {};
+  if (content.html) options.htmlBody = content.html;
+  if (attachObj && attachObj.blob) options.attachments = [attachObj.blob];
+
+  var toField;
+  if (isBcc) {
+    // Address the email to the sending account and BCC the whole list.
+    toField = Session.getActiveUser().getEmail() || emails[0];
+    options.bcc = emails.join(",");
+  } else {
+    toField = emails.join(",");
+  }
+
+  try {
+    MailApp.sendEmail(toField, subject, content.text, options);
+    return { ok: true, error: null };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) ? e.message : "Unknown error" };
+  }
+}
+
+/**
+ * Batch flow: collects all (non-skipped) recipients and sends them in batched
+ * emails of at most batchSize recipients each (to stay under the provider's
+ * "recipients per message" limit). Honors MODE ("dry" logs only; "test"/"actual"
+ * actually send). Because each send is one un-personalized email, it writes a
+ * SINGLE tracking row per chunk: the Email column holds that chunk's addresses
+ * stacked newline-separated, and the Name column holds the count. buildSentSet_
+ * splits that cell back out, so SKIP_ALREADY_SENT still works per-email.
+ */
+function batchFlow_(recipients, tracking, message, attachObj, subject, alreadySent, mode, recipientMode, batchSize) {
+  var emails = [];
+  recipients.forEach(function(firstName, email) {
+    if (alreadySent && alreadySent.has(email)) return;
+    emails.push(email);
+  });
+
+  var attachLabel = attachObj ? attachObj.name : "None";
+  var runType = (mode === "dry") ? "Dry Run" : (mode === "test" ? "Test Run" : "Actual Run");
+  var via = (recipientMode !== "to" ? "BCC" : "TO");
+
+  if (emails.length === 0) {
+    Logger.log("Batch %s: no recipients to send (all filtered or already sent).", mode);
+    return;
+  }
+
+  // Apps Script hard cap: 50 recipients (to + cc + bcc combined) per message.
+  // In BCC mode the To field holds 1 address (the sending self), so reserve a slot.
+  var MAX_RECIPIENTS_PER_MESSAGE = 50;
+  var reserved = (recipientMode !== "to") ? 1 : 0; // To-self occupies 1 slot in bcc mode
+  var maxChunk = MAX_RECIPIENTS_PER_MESSAGE - reserved;
+
+  // Effective chunk size: requested batchSize, clamped to the provider cap.
+  var requested = (batchSize && batchSize > 0) ? batchSize : emails.length;
+  var chunkSize = Math.min(requested, maxChunk);
+
+  var chunks = [];
+  for (var i = 0; i < emails.length; i += chunkSize) {
+    chunks.push(emails.slice(i, i + chunkSize));
+  }
+
+  Logger.log("Batch %s: %s recipient(s) split into %s message(s) of up to %s via %s (cap %s/msg).",
+    mode, emails.length, chunks.length, chunkSize, via, MAX_RECIPIENTS_PER_MESSAGE);
+
+  chunks.forEach(function(chunk, idx) {
+    // One tracking row per chunk: chunk's addresses stacked in the Email column.
+    var emailCell = chunk.join("\n");
+    var countLabel = chunk.length + " recipients (batch " + (idx + 1) + "/" + chunks.length + ")";
+
+    if (mode === "dry") {
+      Logger.log("Dry run (batch %s/%s): Would send ONE email to %s recipient(s) via %s. Attachment: %s",
+        (idx + 1), chunks.length, chunk.length, via, attachLabel);
+      appendTracking_(tracking, emailCell, "Pending", runType, countLabel, "", attachLabel, subject);
+      return;
+    }
+
+    // test or actual: actually send this chunk's email
+    var res = safeSendBatchEmail_(chunk, subject, message, attachObj, recipientMode);
+    if (res.ok) {
+      Logger.log("Batch %s (%s/%s): sent ONE email to %s recipient(s) via %s. Attachment: %s",
+        mode, (idx + 1), chunks.length, chunk.length, via, attachLabel);
+    } else {
+      Logger.log("Batch %s (%s/%s): failed to send. Error: %s", mode, (idx + 1), chunks.length, res.error);
+    }
+    appendTracking_(tracking, emailCell, res.ok ? "Sent" : "Failed", runType, countLabel,
+      res.ok ? "" : res.error, attachLabel, subject);
+  });
 }
 
 /** ————————————————————————————————————————————————————————
