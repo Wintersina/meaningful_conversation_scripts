@@ -2,14 +2,14 @@ function sendEmails() {
   // ——— CONFIG ————————————————————————————————————————————————————————
   var CONFIG = {
     MODE: "test", // "dry" | "test" | "actual"
-    SUBJECT: "Reminder: No MCSTL Gathering Tonight (7/6)",
+    SUBJECT: "A Common Endeavor St. Louis",
 
     // Message body source (Google Doc)
     DOC_ID: EMAILER_KEYS.docId, // required
 
-    // Optional PDF attachment
-    ATTACH_PDF: false,
-    PDF_ID: EMAILER_KEYS.pdfId,
+    // Optional file attachment (any Drive file: PDF, image, etc.)
+    ATTACH_FILE: true,
+    ATTACHMENT_ID: EMAILER_KEYS.attachmentId,
 
     // Test recipients for "test" mode
     TEST_RECIPIENTS: ["wintersina@gmail.com"], //"brainlift@gmail.com
@@ -32,6 +32,31 @@ function sendEmails() {
     // (normalized, case-insensitive). Cells with "-", "--", or empty are skipped.
     FILTER_BY_EVENT: false,
     FILTER_EVENT_TITLE: "One God, Many Paths",  // e.g. "A Divine Connection to Nature"
+
+    // If true, filter by the "# Events Attended" column (header located in
+    // Row 5). Set either bound to null to disable it; set both for a range.
+    //  - ATTENDED_MORE_THAN: only include people who attended MORE THAN this many
+    //  - ATTENDED_LESS_THAN: only include people who attended LESS THAN this many
+    // e.g. MORE_THAN: 5, LESS_THAN: 10 → people with 6-9 attended meetings.
+    // Rows with a blank/non-numeric count are always skipped when this is on.
+    FILTER_BY_ATTENDED_COUNT: true,
+    ATTENDED_MORE_THAN: 5,
+    ATTENDED_LESS_THAN: null,
+
+    // Emails to never send to, regardless of any other filter (case-insensitive).
+    // Applies to the sheet-built list in "dry"/"actual" modes; TEST_RECIPIENTS
+    // in "test" mode are not filtered (they're explicitly chosen).
+    EXCLUDE_EMAILS: [
+        "jmarieloveshorses@gmail.com",
+        "turner/usmarine@yahoo.com",
+        "lucretiabates.1b@gmail.com",
+        "Fernettapitts@gmail.com",
+        "AkashVenkataramanan2@gmail.com",
+        "kejholliday@gmail.com",
+        "lkristjansson@hotmail.com",
+        "juanjgarcia2000@yahoo.com",
+        "kyleddamron@gmail.com",
+        ],
 
     // If true, skip emails that were already sent with the same SUBJECT in a previous run.
     // Different subjects are treated as separate sends (idempotent per email+subject).
@@ -64,9 +89,9 @@ function sendEmails() {
   if (!contactSheet) throw new Error('Missing sheet: "' + CONFIG.CONTACT_SHEET_NAME + '"');
   var tracking = ensureTrackingSheet_(ss, CONFIG.TRACKING_SHEET_NAME);
 
-  // 2) Load message + optional PDF
+  // 2) Load message + optional attachment
   var message = loadMessageFromDoc_(CONFIG.DOC_ID);
-  var attach = CONFIG.ATTACH_PDF ? loadOptionalPdf_(CONFIG.PDF_ID) : null; // {blob, name} or null
+  var attach = CONFIG.ATTACH_FILE ? loadOptionalAttachment_(CONFIG.ATTACHMENT_ID) : null; // {blob, name} or null
 
   // 3) Build recipient map (email => firstName), honoring EMAIL_START/STOP_EMAIL markers
   var recipients = (CONFIG.MODE === "test")
@@ -93,6 +118,23 @@ function sendEmails() {
       Logger.log("Filtering by event: \"" + CONFIG.FILTER_EVENT_TITLE + "\" (column " + columnToLetter(eventColIdx + 1) + ")");
     }
 
+    // Resolve "# Events Attended" column index if filtering by attendance count
+    var attendedColIdx = -1;
+    if (CONFIG.FILTER_BY_ATTENDED_COUNT) {
+      if (CONFIG.ATTENDED_MORE_THAN == null && CONFIG.ATTENDED_LESS_THAN == null) {
+        throw new Error("FILTER_BY_ATTENDED_COUNT is on but both ATTENDED_MORE_THAN and ATTENDED_LESS_THAN are null.");
+      }
+      attendedColIdx = findAttendedCountColumn_(contactSheet);
+      if (attendedColIdx === -1) {
+        throw new Error('Column "' + COL_CONSTANTS.EVENTS_ATTENDED + '" not found in Row 5.');
+      }
+      var boundsDesc = [];
+      if (CONFIG.ATTENDED_MORE_THAN != null) boundsDesc.push("more than " + CONFIG.ATTENDED_MORE_THAN);
+      if (CONFIG.ATTENDED_LESS_THAN != null) boundsDesc.push("less than " + CONFIG.ATTENDED_LESS_THAN);
+      Logger.log("Filtering by attendance: " + boundsDesc.join(" and ") +
+        " meetings (column " + columnToLetter(attendedColIdx + 1) + ")");
+    }
+
     recipients = buildUniqueRecipientsFromSheet_(
       contactSheet,
       CONFIG.COL_NAME,
@@ -100,7 +142,11 @@ function sendEmails() {
       CONFIG.FILTER_REPEAT_ATTENDEES,
       CONFIG.REPEAT_FLAG_COL,
       CONFIG.REPEAT_FLAG_VALUE,
-      eventColIdx
+      eventColIdx,
+      attendedColIdx,
+      CONFIG.ATTENDED_MORE_THAN,
+      CONFIG.ATTENDED_LESS_THAN,
+      CONFIG.EXCLUDE_EMAILS
     );
   }
 
@@ -126,7 +172,7 @@ function sendEmails() {
     actualRunFlow_(recipients, tracking, message, attach, CONFIG.SUBJECT, alreadySent);
   }
 
-  Logger.log("Emails processed. Mode=" + CONFIG.MODE + ", attach_pdf=" + !!attach);
+  Logger.log("Emails processed. Mode=" + CONFIG.MODE + ", attach_file=" + !!attach);
 }
 
 /** ————————————————————————————————————————————————————————
@@ -199,14 +245,14 @@ function asEmailContent_(content) {
   return { text: String(content || ""), html: null };
 }
 
-function loadOptionalPdf_(pdfId) {
-  if (!pdfId) return null;
+function loadOptionalAttachment_(fileId) {
+  if (!fileId) return null;
   try {
-    var file = DriveApp.getFileById(pdfId);
+    var file = DriveApp.getFileById(fileId);
     return { blob: file.getBlob(), name: file.getName() };
   } catch (e) {
-    // If ATTACH_PDF=true but file fetch fails, we fail fast so it isn't silent
-    throw new Error("Cannot access the PDF file: " + e);
+    // If ATTACH_FILE=true but file fetch fails, we fail fast so it isn't silent
+    throw new Error("Cannot access the attachment file: " + e);
   }
 }
 
@@ -244,6 +290,16 @@ function findEventColumnByTitle_(sheet, title) {
 }
 
 /**
+ * Finds the 0-based column index of the "# Events Attended" column by looking
+ * up COL_CONSTANTS.EVENTS_ATTENDED in the Row 5 header (same pattern as
+ * backfill_events_formulas / calendar_sync). Returns -1 if not found.
+ */
+function findAttendedCountColumn_(sheet) {
+  var headerRow = sheet.getRange(ROW_NUMBERS.ROW_5, 1, 1, sheet.getLastColumn()).getValues()[0];
+  return headerRow.indexOf(COL_CONSTANTS.EVENTS_ATTENDED);
+}
+
+/**
  * Build recipients honoring two markers in the Name column:
  *  - COL_CONSTANTS.EMAIL_START: start sending AFTER this row
  *  - COL_CONSTANTS.STOP_EMAIL : stop sending BEFORE this row
@@ -255,8 +311,12 @@ function findEventColumnByTitle_(sheet, title) {
  *    (case-insensitive, trimmed).
  *  - If eventColIdx >= 0, only include rows that have a non-empty, non-dash value
  *    in that column (people who registered/attended for that event).
+ *  - If attendedColIdx >= 0, only include rows whose "# Events Attended" count
+ *    is strictly greater than attendedMoreThan (if non-null) AND strictly less
+ *    than attendedLessThan (if non-null). Blank/non-numeric counts are skipped.
+ *  - excludeEmails: addresses to always drop from the list (case-insensitive).
  */
-function buildUniqueRecipientsFromSheet_(sheet, nameColIdx, emailColIdx, filterRepeat, repeatColIdx, repeatValue, eventColIdx) {
+function buildUniqueRecipientsFromSheet_(sheet, nameColIdx, emailColIdx, filterRepeat, repeatColIdx, repeatValue, eventColIdx, attendedColIdx, attendedMoreThan, attendedLessThan, excludeEmails) {
   var data = sheet.getDataRange().getValues();
   var emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -300,6 +360,19 @@ function buildUniqueRecipientsFromSheet_(sheet, nameColIdx, emailColIdx, filterR
   // Event column filter
   var shouldFilterEvent = (eventColIdx !== undefined && eventColIdx >= 0);
 
+  // Attendance count filter (either bound may be null/undefined = disabled)
+  var shouldFilterAttended = (attendedColIdx !== undefined && attendedColIdx >= 0);
+  var attendedMin = (attendedMoreThan != null) ? Number(attendedMoreThan) : null;
+  var attendedMax = (attendedLessThan != null) ? Number(attendedLessThan) : null;
+
+  // Exclude list: normalized (trimmed, lowercase) set of addresses to always drop
+  var excludeSet = new Set();
+  (excludeEmails || []).forEach(function(e) {
+    var norm = (e || "").toString().trim().toLowerCase();
+    if (norm) excludeSet.add(norm);
+  });
+  var excludedCount = 0;
+
   // Collect unique recipients within [startIdx, endIdx]
   var map = new Map();
   for (var r = startIdx; r <= endIdx; r++) {
@@ -317,6 +390,14 @@ function buildUniqueRecipientsFromSheet_(sheet, nameColIdx, emailColIdx, filterR
       if (!eventVal || eventVal === "-" || eventVal === "--") continue;
     }
 
+    // Optional attendance count filter: keep only counts inside the (min, max) bounds
+    if (shouldFilterAttended) {
+      var attendedCount = Number(row[attendedColIdx]);
+      if (!isFinite(attendedCount)) continue;
+      if (attendedMin !== null && attendedCount <= attendedMin) continue;
+      if (attendedMax !== null && attendedCount >= attendedMax) continue;
+    }
+
     var nameCell = (row[nameColIdx] || "").toString().trim();
     var email = (row[emailColIdx] || "").toString().trim();
 
@@ -324,15 +405,29 @@ function buildUniqueRecipientsFromSheet_(sheet, nameColIdx, emailColIdx, filterR
     var emails = email.split(/[,;]+/);
     for (var e = 0; e < emails.length; e++) {
       var singleEmail = emails[e].trim();
-      if (singleEmail && emailRegex.test(singleEmail) && !map.has(singleEmail)) {
-        var first = nameCell ? nameCell.split(/\s+/)[0] : "";
-        map.set(singleEmail, first);
+      if (!singleEmail || !emailRegex.test(singleEmail) || map.has(singleEmail)) continue;
+      if (excludeSet.has(singleEmail.toLowerCase())) {
+        excludedCount++;
+        continue;
       }
+      var first = nameCell ? nameCell.split(/\s+/)[0] : "";
+      map.set(singleEmail, first);
     }
   }
 
   if (shouldFilterEvent) {
     Logger.log("Event filter: " + map.size + " recipients with RSVP/attendance in event column");
+  }
+
+  if (shouldFilterAttended) {
+    var bounds = [];
+    if (attendedMin !== null) bounds.push("more than " + attendedMin);
+    if (attendedMax !== null) bounds.push("less than " + attendedMax);
+    Logger.log("Attendance filter: " + map.size + " recipients with " + bounds.join(" and ") + " meetings attended");
+  }
+
+  if (excludeSet.size > 0) {
+    Logger.log("Exclude list: dropped " + excludedCount + " address(es) matching EXCLUDE_EMAILS");
   }
 
   return map;
@@ -375,7 +470,7 @@ function appendTracking_(trackingSheet, email, status, runType, firstName, err, 
     firstName,
     new Date(),
     err || "",
-    attachmentLabel || "", // e.g., pdf name or "None"
+    attachmentLabel || "", // e.g., attachment file name or "None"
     subject || ""          // Column H: Subject
   ]);
 }
