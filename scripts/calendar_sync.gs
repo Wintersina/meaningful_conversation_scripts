@@ -39,14 +39,11 @@ function runCalendarSync_(options) {
   var scheduleSheet = sheetsByName()[2];
 
   // Find the "# Events Attended" column in row 5 to know where event columns end
-  var lastCol = contactListSheet.getLastColumn();
-  var row5Values = contactListSheet.getRange(ROW_NUMBERS.ROW_5, 1, 1, lastCol).getValues()[0];
-  var attendedIndex0 = row5Values.indexOf(COL_CONSTANTS.EVENTS_ATTENDED);
-  if (attendedIndex0 === -1) {
+  var attendedCol1 = findColMarker_(contactListSheet, MARKER_KEYS.EVENTS_ATTENDED, COL_CONSTANTS.EVENTS_ATTENDED); // 1-based
+  if (attendedCol1 === -1) {
     Logger.log("Could not find '# Events Attended' column. Aborting sync.");
     return;
   }
-  var attendedCol1 = attendedIndex0 + 1; // 1-based
 
   // Event columns: start at col O (15), end just before "# Events Attended"
   var startCol = HELPER_CONSTANTS.EVENT_NAMES_START_COL; // 15

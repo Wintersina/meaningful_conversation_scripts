@@ -47,16 +47,9 @@ function moveRowsFromEventBriteImportToContactList() {
     .getRange(ROW_NUMBERS.ROW_7, 1, 1, contactLastCol)
     .getValues()[0]; // Event headers across columns
 
-  const headerRow = contactListSheet
-    .getRange(ROW_NUMBERS.ROW_5, 1, 1, contactLastCol)
-    .getValues()[0]; // Counters row
-
-  const rsvpCol0 = headerRow.indexOf(COL_CONSTANTS.EVENTS_RSVPD);
-  const attendedCol0 = headerRow.indexOf(COL_CONSTANTS.EVENTS_ATTENDED);
-  if (rsvpCol0 === -1 || attendedCol0 === -1) return;
-
-  const rsvpCol = rsvpCol0 + 1;
-  const attendedCol = attendedCol0 + 1;
+  const rsvpCol     = findColMarker_(contactListSheet, MARKER_KEYS.EVENTS_RSVPD,    COL_CONSTANTS.EVENTS_RSVPD);    // 1-based
+  const attendedCol = findColMarker_(contactListSheet, MARKER_KEYS.EVENTS_ATTENDED, COL_CONSTANTS.EVENTS_ATTENDED); // 1-based
+  if (rsvpCol === -1 || attendedCol === -1) return;
   const attendedColLetter = columnToLetter(attendedCol);
 
   // ----------------------------------------

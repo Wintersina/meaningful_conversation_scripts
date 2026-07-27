@@ -160,3 +160,126 @@ function sheetsByName() {
 
   return [contactListSheet, eventbriteSheet, scheduleSheet];
 }
+
+// ============================================================================
+// DeveloperMetadata marker helpers
+// ----------------------------------------------------------------------------
+// Landmarks — counter columns in row 5 (# Events Attended/RSVP'd, Next Steps)
+// and section-boundary rows (Total RSVP'd, ...) — are located via
+// DeveloperMetadata for an O(1) lookup that also auto-shifts when rows/columns
+// are inserted. Every lookup is self-healing: if the pin is missing or no
+// longer sits on the expected label, it falls back to the classic scan and
+// re-pins. This means a sheet with no metadata yet behaves exactly like before
+// on the first run, then gets fast afterwards.
+// ============================================================================
+
+const MARKER_KEYS = {
+  EVENTS_ATTENDED: "mc.col.eventsAttended", // row-5 header
+  EVENTS_RSVPD:    "mc.col.eventsRsvpd",     // row-5 header
+  NEXT_STEPS:      "mc.col.nextSteps",       // row-5 header
+  TOTAL_RSVPD:     "mc.row.totalRsvpd",      // pointer to the CURRENT (last) block
+};
+
+const DM_VISIBILITY = SpreadsheetApp.DeveloperMetadataVisibility.DOCUMENT;
+
+/**
+ * Find a counter column (row-5 header) by metadata, self-healing to an indexOf
+ * scan of row 5. Returns a 1-based column index, or -1 if the label is absent.
+ */
+function findColMarker_(sheet, key, label) {
+  const found = sheet.createDeveloperMetadataFinder()
+    .withLocationType(SpreadsheetApp.DeveloperMetadataLocationType.COLUMN)
+    .withKey(key).find();
+
+  if (found.length) {
+    const col = found[0].getLocation().getColumn().getColumn();
+    if (String(sheet.getRange(ROW_NUMBERS.ROW_5, col).getValue()).trim() === label) {
+      return col; // pin still valid
+    }
+    found.forEach(m => m.remove()); // stale pin — drop and rescan
+  }
+
+  const lastCol = sheet.getLastColumn();
+  const header = sheet.getRange(ROW_NUMBERS.ROW_5, 1, 1, lastCol).getValues()[0];
+  const idx0 = header.findIndex(v => String(v).trim() === label);
+  if (idx0 === -1) return -1;
+
+  const col = idx0 + 1;
+  pinColMarker_(sheet, key, col);
+  return col;
+}
+
+function pinColMarker_(sheet, key, colIndex) {
+  sheet.createDeveloperMetadataFinder()
+    .withLocationType(SpreadsheetApp.DeveloperMetadataLocationType.COLUMN)
+    .withKey(key).find().forEach(m => m.remove());
+  // Metadata requires an *entire* column — a bounded getRange(...maxRows...) is
+  // rejected as an "arbitrary range", so use A1 whole-column notation ("P:P").
+  const letter = columnToLetter(colIndex);
+  sheet.getRange(letter + ":" + letter).addDeveloperMetadata(key, DM_VISIBILITY);
+}
+
+/**
+ * Find a section-boundary row by metadata, self-healing to a scan of `scanCol`
+ * (1-based). Returns a 1-based row index, or -1 if the label is absent. When
+ * findLast is true the fallback scan matches the LAST occurrence (used for the
+ * repeated "Total RSVP'd" label, where we want the current/last block).
+ */
+function findRowMarker_(sheet, key, label, scanCol, findLast) {
+  const found = sheet.createDeveloperMetadataFinder()
+    .withLocationType(SpreadsheetApp.DeveloperMetadataLocationType.ROW)
+    .withKey(key).find();
+
+  if (found.length) {
+    const row = found[0].getLocation().getRow().getRow();
+    if (String(sheet.getRange(row, scanCol).getValue()).trim() === label) {
+      return row; // pin still valid
+    }
+    found.forEach(m => m.remove()); // stale pin — drop and rescan
+  }
+
+  const row = scanColumnForLabel_(sheet, label, scanCol, findLast);
+  if (row > 0) pinRowMarker_(sheet, key, row);
+  return row;
+}
+
+function scanColumnForLabel_(sheet, label, scanCol, findLast) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 1) return -1;
+  const vals = sheet.getRange(1, scanCol, lastRow, 1).getValues();
+  let found = -1;
+  for (let i = 0; i < vals.length; i++) {
+    if (String(vals[i][0]).trim() === label) {
+      found = i + 1; // 1-based
+      if (!findLast) break;
+    }
+  }
+  return found;
+}
+
+function pinRowMarker_(sheet, key, rowIndex) {
+  sheet.createDeveloperMetadataFinder()
+    .withLocationType(SpreadsheetApp.DeveloperMetadataLocationType.ROW)
+    .withKey(key).find().forEach(m => m.remove());
+  // Metadata requires an *entire* row — a bounded getRange(...maxColumns...) is
+  // rejected as an "arbitrary range", so use A1 whole-row notation ("5:5").
+  sheet.getRange(rowIndex + ":" + rowIndex).addDeveloperMetadata(key, DM_VISIBILITY);
+}
+
+/**
+ * One-time (or anytime) primer: scans the Contact List the classic way and pins
+ * metadata for every known landmark, so subsequent lookups are O(1). Safe to
+ * re-run at any point — each pin is replaced. Exposed on the Custom Actions menu.
+ */
+function bootstrapContactListMarkers() {
+  const [contactListSheet] = sheetsByName();
+
+  [[MARKER_KEYS.EVENTS_ATTENDED, COL_CONSTANTS.EVENTS_ATTENDED],
+   [MARKER_KEYS.EVENTS_RSVPD,    COL_CONSTANTS.EVENTS_RSVPD],
+   [MARKER_KEYS.NEXT_STEPS,      COL_CONSTANTS.NEXT_STEPS]].forEach(([key, label]) => {
+    Logger.log("col marker %s -> %s", label, findColMarker_(contactListSheet, key, label));
+  });
+
+  const totalRow = findRowMarker_(contactListSheet, MARKER_KEYS.TOTAL_RSVPD, COL_CONSTANTS.TOTAL_RSVPD, 2, true);
+  Logger.log("row marker %s -> %s", COL_CONSTANTS.TOTAL_RSVPD, totalRow);
+}

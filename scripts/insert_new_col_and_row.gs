@@ -17,12 +17,9 @@ function importNewEventsFromSchedule() {
   // 1) Locate "# Events Attended" column (row 5)
   // ----------------------------
   const lastCol = contactListSheet.getLastColumn();
-  const headerRowValues = contactListSheet.getRange(ROW_NUMBERS.ROW_5, 1, 1, lastCol).getValues()[0];
 
-  const attendedIndex0 = headerRowValues.indexOf(COL_CONSTANTS.EVENTS_ATTENDED); // 0-based
-  if (attendedIndex0 === -1) return; // FIX: was `== 0` (wrong)
-
-  const attendedCol1 = attendedIndex0 + 1; // 1-based
+  const attendedCol1 = findColMarker_(contactListSheet, MARKER_KEYS.EVENTS_ATTENDED, COL_CONSTANTS.EVENTS_ATTENDED); // 1-based
+  if (attendedCol1 === -1) return;
 
   // ----------------------------
   // 2) Read schedule rows (skip header row 1) and filter new events
@@ -175,8 +172,10 @@ function importNewEventsFromSchedule() {
   // 6) Insert rows below the last "Total RSVP'd" block and populate summary formulas
   //    (Speed fixes: move expensive operations OUTSIDE loops; batch formula setting)
   // ----------------------------
-  const colBValues = contactListSheet.getRange(1, 2, contactListSheet.getLastRow(), 1).getValues().flat();
-  const totalRSVPRowIndex = colBValues.lastIndexOf(COL_CONSTANTS.TOTAL_RSVPD) + 1; // 1-based
+  // Locate the current (last) "Total RSVP'd" block via its pinned metadata.
+  // Self-heals to a column-B scan for the LAST occurrence if the pin is missing.
+  const totalRSVPRowIndex = findRowMarker_(
+    contactListSheet, MARKER_KEYS.TOTAL_RSVPD, COL_CONSTANTS.TOTAL_RSVPD, 2, /*findLast=*/true); // 1-based
 
   if (totalRSVPRowIndex <= 0) return;
 
@@ -202,6 +201,10 @@ function importNewEventsFromSchedule() {
   // Labels in column B
   contactListSheet.getRange(insertRowIndex,     2).setValue(scheduleTitleValue);
   contactListSheet.getRange(insertRowIndex + 5, 2).setValue(COL_CONSTANTS.TOTAL_RSVPD);
+
+  // Re-pin the "last block" pointer to the newly created Total RSVP'd row so the
+  // next run finds it in O(1) instead of scanning all of column B.
+  pinRowMarker_(contactListSheet, MARKER_KEYS.TOTAL_RSVPD, insertRowIndex + 5);
 
   // Summary COUNTIF row formulas across event columns
   // Start at O (15), end at "# Events Attended" column

@@ -17,22 +17,18 @@ function backfillEventsFormulas() {
   const [sheet] = sheetsByName();
 
   const lastRow  = sheet.getLastRow();
-  const lastCol  = sheet.getLastColumn();
 
   // ----------------------------------------
   // Find attended and rsvp column indices
   // ----------------------------------------
-  const headerRow     = sheet.getRange(ROW_NUMBERS.ROW_5, 1, 1, lastCol).getValues()[0];
-  const attendedCol0  = headerRow.indexOf(COL_CONSTANTS.EVENTS_ATTENDED);
-  const rsvpCol0      = headerRow.indexOf(COL_CONSTANTS.EVENTS_RSVPD);
+  const attendedCol = findColMarker_(sheet, MARKER_KEYS.EVENTS_ATTENDED, COL_CONSTANTS.EVENTS_ATTENDED); // 1-based
+  const rsvpCol     = findColMarker_(sheet, MARKER_KEYS.EVENTS_RSVPD,    COL_CONSTANTS.EVENTS_RSVPD);    // 1-based
 
-  if (attendedCol0 === -1 || rsvpCol0 === -1) {
+  if (attendedCol === -1 || rsvpCol === -1) {
     Logger.log("backfillEventsFormulas: could not find attended/rsvp columns — aborting");
     return;
   }
 
-  const attendedCol       = attendedCol0 + 1; // 1-based
-  const rsvpCol           = rsvpCol0 + 1;     // 1-based
   const attendedColLetter = columnToLetter(attendedCol);
 
   // ----------------------------------------

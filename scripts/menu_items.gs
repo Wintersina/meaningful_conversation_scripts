@@ -38,6 +38,7 @@ function onOpen() {
         .addItem("Consolidate Duplicate Calendar Events", 'consolidateExistingCalendarDuplicates')
         .addSeparator()
         .addItem("Generate Data Analysis Graphs", 'createRSVPvsAttendanceChart')
+        .addItem("Prime Marker Metadata", 'bootstrapContactListMarkers')
         .addToUi();
     }
 

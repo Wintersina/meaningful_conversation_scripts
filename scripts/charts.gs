@@ -291,16 +291,13 @@ function createYearlySummarySection_(sheet, startRow) {
  */
 function createFrequentAttendeesSection_(sheet, startRow) {
   const [contactListSheet] = sheetsByName();
-  const lastCol = contactListSheet.getLastColumn();
   const lastRow = contactListSheet.getLastRow();
 
-  const headerRowValues = contactListSheet.getRange(ROW_NUMBERS.ROW_5, 1, 1, lastCol).getValues()[0];
-  const attendedColIndex0 = headerRowValues.indexOf(COL_CONSTANTS.EVENTS_ATTENDED);
-  if (attendedColIndex0 === -1) {
+  const attendedCol1 = findColMarker_(contactListSheet, MARKER_KEYS.EVENTS_ATTENDED, COL_CONSTANTS.EVENTS_ATTENDED);
+  if (attendedCol1 === -1) {
     sheet.getRange(startRow, 1).setValue("Could not find '# Events Attended' column.");
     return startRow + 2;
   }
-  const attendedCol1 = attendedColIndex0 + 1;
 
   const dataStartRow = ROW_NUMBERS.ROW_12;
   const numRows = lastRow - dataStartRow + 1;
