@@ -365,7 +365,16 @@ function dateKey_(d) {
  */
 function patchCalendarEvent_(calendar, event, patch) {
   var eventId = event.getId().replace(/@google\.com$/, "");
-  Calendar.Events.patch(patch, calendar.getId(), eventId);
+  try {
+    Calendar.Events.patch(patch, calendar.getId(), eventId);
+  } catch (e) {
+    // Surface the exact API reason (the raw exception only says "Bad Request").
+    Logger.log("Calendar.Events.patch FAILED id=" + eventId +
+      " allDay=" + event.isAllDayEvent() +
+      " patch=" + JSON.stringify(patch) +
+      " err=" + e.message);
+    throw e;
+  }
 }
 
 /**
@@ -407,6 +416,12 @@ function updateCanonicalEvent_(calendar, event, o) {
     if (needTime) {
       patch.start = { dateTime: toRfc3339_(o.startTime, o.timeZone), timeZone: o.timeZone };
       patch.end = { dateTime: toRfc3339_(o.endTime, o.timeZone), timeZone: o.timeZone };
+      // Converting an all-day event to a timed one requires explicitly clearing
+      // the date component, or the Calendar API rejects the patch with 400.
+      if (event.isAllDayEvent()) {
+        patch.start.date = null;
+        patch.end.date = null;
+      }
     }
     patchCalendarEvent_(calendar, event, patch);
   }
