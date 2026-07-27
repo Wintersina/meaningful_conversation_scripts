@@ -409,22 +409,55 @@ function updateCanonicalEvent_(calendar, event, o) {
     if (needTitle) event.setTitle(o.calendarTitle);
     if (needTime) event.setTime(o.startTime, o.endTime);
     event.setDescription(o.description);
+    return;
   } catch (e) {
     Logger.log("CalendarApp update not allowed for " + o.dateStr +
-      " (" + e.message + ") — falling back to advanced Calendar API.");
-    var patch = { summary: o.calendarTitle, description: o.description };
-    if (needTime) {
-      patch.start = { dateTime: toRfc3339_(o.startTime, o.timeZone), timeZone: o.timeZone };
-      patch.end = { dateTime: toRfc3339_(o.endTime, o.timeZone), timeZone: o.timeZone };
-      // Converting an all-day event to a timed one requires explicitly clearing
-      // the date component, or the Calendar API rejects the patch with 400.
-      if (event.isAllDayEvent()) {
-        patch.start.date = null;
-        patch.end.date = null;
-      }
-    }
-    patchCalendarEvent_(calendar, event, patch);
+      " (" + e.message + ") — trying advanced Calendar API.");
   }
+
+  // Gmail-created events (eventType "fromGmail") are immutable via BOTH
+  // CalendarApp and the advanced API — patch returns 400. Detect and skip them
+  // rather than crashing; there is no payload that makes the edit succeed.
+  if (isGmailEvent_(event)) {
+    Logger.log("Event " + event.getId() + " for " + o.dateStr +
+      " is a Gmail-created event and cannot be edited via the API — left as-is.");
+    return;
+  }
+
+  var patch = { summary: o.calendarTitle, description: o.description };
+  if (needTime) {
+    patch.start = { dateTime: toRfc3339_(o.startTime, o.timeZone), timeZone: o.timeZone };
+    patch.end = { dateTime: toRfc3339_(o.endTime, o.timeZone), timeZone: o.timeZone };
+    // Converting an all-day event to a timed one requires explicitly clearing
+    // the date component, or the Calendar API rejects the patch with 400.
+    if (event.isAllDayEvent()) {
+      patch.start.date = null;
+      patch.end.date = null;
+    }
+  }
+
+  try {
+    patchCalendarEvent_(calendar, event, patch);
+  } catch (e2) {
+    // A single un-editable event must never abort the whole sync run.
+    Logger.log("Advanced patch failed for " + o.dateStr + " (event " +
+      event.getId() + ") — leaving it unchanged and continuing. " + e2.message);
+  }
+}
+
+/**
+ * True when the event was auto-created by Gmail from an email (eventType
+ * "fromGmail"). Such events are immutable via both CalendarApp and the advanced
+ * Calendar API, so we must not attempt to edit them. Detected from the
+ * description signature Google injects, which avoids an extra API round-trip.
+ * @param {CalendarApp.CalendarEvent} event
+ * @return {boolean}
+ */
+function isGmailEvent_(event) {
+  var desc = "";
+  try { desc = event.getDescription() || ""; } catch (e) { desc = ""; }
+  return desc.indexOf("created from an email you received in Gmail") !== -1 ||
+    desc.indexOf("extsrc=cal") !== -1;
 }
 
 /**
