@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/sync-on-stop.sh",
+            "timeout": 90,
+            "statusMessage": "Syncing repo → origin + live…"
+          }
+        ]
+      }
+    ]
+  }
+}
