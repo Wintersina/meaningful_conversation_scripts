@@ -41,6 +41,11 @@ function lifecycleEmailerConfig_() {
     INCLUDE_MAYBE_RSVPS: true,
     INCLUDE_TODAY: true, // treat today's event as upcoming
 
+    // welcome only: skip people who have already attended MORE THAN this many
+    // events ("# Events Attended" column) — regulars don't need the intro
+    // email. 1 = only 0x/1x attendees get welcomed; null disables the cap.
+    WELCOME_MAX_PRIOR_ATTENDED: 1,
+
     // reminder: only nudge for events within this many days (1 = today+tomorrow,
     // per the guidance that same-day / day-before messaging is most effective)
     REMINDER_WINDOW_DAYS: 1,
@@ -111,6 +116,8 @@ var EMAIL_TEMPLATES = {
     label: "Welcome",
     eventScope: "upcoming",
     audience: function(cell, config) { return rsvpCellIsSignup_(cell, config.INCLUDE_MAYBE_RSVPS); },
+    // The welcome is an introduction — repeat attendees shouldn't get it.
+    useNewcomerCap: true,
     subject: function(ev, ctx, config) { return "Excited to meet you!"; },
     build: buildWelcomeEmailBody_
   },
@@ -358,9 +365,15 @@ function collectEventAudience_(contactSheet, eventCol0, tpl, config) {
   var emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   var seen = new Set();
   var out = [];
+  var attendedCol0 = newcomerCapColumn_(contactSheet, tpl, config);
+  var skippedRegulars = 0;
 
   for (var r = 0; r < data.length; r++) {
     if (!tpl.audience(data[r][eventCol0], config)) continue;
+    if (attendedCol0 !== -1 && isRegularAttendee_(data[r][attendedCol0], config.WELCOME_MAX_PRIOR_ATTENDED)) {
+      skippedRegulars++;
+      continue;
+    }
 
     var rawEmail = (data[r][COLUMN_INDEX.EMAIL] || "").toString().trim();
     if (!rawEmail) continue;
@@ -374,7 +387,30 @@ function collectEventAudience_(contactSheet, eventCol0, tpl, config) {
 
     out.push({ email: email, firstName: extractFirstName_(data[r]), matchedAudience: true });
   }
+  if (skippedRegulars > 0) {
+    Logger.log("[%s] Newcomer cap: skipped %s repeat attendee row(s) (> %s events attended).",
+      tpl.label, skippedRegulars, config.WELCOME_MAX_PRIOR_ATTENDED);
+  }
   return out;
+}
+
+/**
+ * Resolves the "# Events Attended" column (0-based) when the template caps its
+ * audience at newcomers (welcome). Returns -1 when the cap doesn't apply.
+ */
+function newcomerCapColumn_(contactSheet, tpl, config) {
+  if (!tpl.useNewcomerCap || config.WELCOME_MAX_PRIOR_ATTENDED == null) return -1;
+  var col1 = findColMarker_(contactSheet, MARKER_KEYS.EVENTS_ATTENDED, COL_CONSTANTS.EVENTS_ATTENDED);
+  return (col1 === -1) ? -1 : col1 - 1;
+}
+
+/**
+ * True when the "# Events Attended" cell shows MORE THAN maxAttended events.
+ * Blank/non-numeric counts are treated as 0 (newcomer), never excluded.
+ */
+function isRegularAttendee_(attendedCell, maxAttended) {
+  var n = Number(attendedCell);
+  return isFinite(n) && n > maxAttended;
 }
 
 /** "signed up": rsvp'd yes (or maybe when included). */

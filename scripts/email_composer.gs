@@ -76,11 +76,15 @@ function getEmailComposerData() {
 
   var counters = all.map(function() {
     return {
-      signups: new Set(),   // welcome + reminder audience
+      newcomers: new Set(), // welcome audience (signups minus repeat attendees)
+      signups: new Set(),   // reminder audience
       noShows: new Set(),   // missed_you audience
       attended: new Set()   // follow_up audience
     };
   });
+
+  // Welcome skips repeat attendees (see WELCOME_MAX_PRIOR_ATTENDED).
+  var attendedCol0 = newcomerCapColumn_(contactSheet, EMAIL_TEMPLATES.welcome, config);
 
   for (var r = 0; r < data.length; r++) {
     var rawEmail = (data[r][COLUMN_INDEX.EMAIL] || "").toString().trim();
@@ -88,9 +92,15 @@ function getEmailComposerData() {
     var email = rawEmail.split(/[,;]+/)[0].trim().toLowerCase();
     if (!emailRegex.test(email)) continue;
 
+    var isRegular = attendedCol0 !== -1 &&
+      isRegularAttendee_(data[r][attendedCol0], config.WELCOME_MAX_PRIOR_ATTENDED);
+
     for (var i = 0; i < all.length; i++) {
       var cell = data[r][all[i].col0];
-      if (rsvpCellIsSignup_(cell, config.INCLUDE_MAYBE_RSVPS)) counters[i].signups.add(email);
+      if (rsvpCellIsSignup_(cell, config.INCLUDE_MAYBE_RSVPS)) {
+        counters[i].signups.add(email);
+        if (!isRegular) counters[i].newcomers.add(email);
+      }
       if (cellIsNoShow_(cell)) counters[i].noShows.add(email);
       if (cellIsAttended_(cell)) counters[i].attended.add(email);
     }
@@ -107,7 +117,7 @@ function getEmailComposerData() {
       dayOfWeek: e.dayOfWeek,
       upcoming: e.date >= today,
       counts: {
-        welcome: counters[i].signups.size,
+        welcome: counters[i].newcomers.size,
         reminder: counters[i].signups.size,
         missed_you: counters[i].noShows.size,
         follow_up: counters[i].attended.size
