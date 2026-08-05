@@ -50,7 +50,9 @@ function lifecycleEmailerConfig_() {
     DEFAULT_ADDRESS: "",             // fallback when Schedule col E has no location
 
     TRACKING_SHEET_NAME: "Lifecycle Email Tracking",
-    TIME_ZONE: "America/Chicago"
+    // Dates are parsed into script-timezone midnights (parseEventDate_), so
+    // formatting MUST use the same zone or day-of-week/date shift by one.
+    TIME_ZONE: Session.getScriptTimeZone()
   };
 }
 
@@ -441,6 +443,8 @@ function getScheduleLocationMap_(scheduleSheet) {
     if (!d) continue;
     var key = dateKey_(d);
     var location = data[i][2] ? String(data[i][2]).trim() : "";
+    // Placeholder values ("TBD", "OFF", "TOPIC") are not real addresses.
+    if (location && SCHEDULE_SHEET_CONSTANTS.SKIP_WORDS.indexOf(location.toUpperCase()) !== -1) location = "";
     if (!map[key] && location) map[key] = location;
   }
   return map;
@@ -474,7 +478,9 @@ function buildWelcomeEmailBody_(firstName, ev, ctx, config) {
 
     'So glad you signed up for our upcoming program "' + ev.title + '". My name is ' + config.SENDER_NAME +
       " and I just wanted to confirm that we will be meeting on " + ev.dayOfWeek + ", " + ev.dateStr +
-      " at " + config.EVENT_TIME + ", and have included the address below. Please let me know if you have any questions.",
+      " at " + config.EVENT_TIME +
+      (ctx.address ? ", and have included the address below." : " — I'll follow up with the address once it's confirmed.") +
+      " Please let me know if you have any questions.",
 
     eventDetailsBlock_(ev, ctx.address, config),
 
