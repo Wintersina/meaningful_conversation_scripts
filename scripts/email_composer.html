@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body { font-family: 'Google Sans', Roboto, Arial, sans-serif; margin: 0; padding: 16px; color: #202124; font-size: 13px; }
+      h3 { margin: 0 0 4px; font-size: 14px; }
+      .hint { color: #5f6368; font-size: 11.5px; margin: 0 0 10px; }
+      select, button { font: inherit; }
+      select { width: 100%; padding: 6px; border: 1px solid #dadce0; border-radius: 6px; background: #fff; }
+      .section { margin-bottom: 14px; }
+      label.block { display: block; font-weight: 500; margin-bottom: 4px; }
+      .tpl { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid #dadce0; border-radius: 8px; margin-bottom: 6px; cursor: pointer; }
+      .tpl input { margin: 0; }
+      .tpl .desc { color: #5f6368; font-size: 11px; }
+      .tpl .count { margin-left: auto; background: #e8f0fe; color: #1967d2; border-radius: 10px; padding: 1px 8px; font-size: 11px; white-space: nowrap; }
+      .tpl .count.zero { background: #f1f3f4; color: #5f6368; }
+      .modes { display: flex; gap: 6px; }
+      .modes label { flex: 1; text-align: center; border: 1px solid #dadce0; border-radius: 8px; padding: 6px 4px; cursor: pointer; }
+      .modes input { display: none; }
+      .modes label.sel { background: #e8f0fe; border-color: #1967d2; color: #1967d2; font-weight: 500; }
+      .modes label.sel.danger { background: #fce8e6; border-color: #c5221f; color: #c5221f; }
+      .modehint { min-height: 16px; margin-top: 6px; font-size: 11.5px; color: #5f6368; }
+      #send { width: 100%; padding: 9px; border: 0; border-radius: 8px; background: #1a73e8; color: #fff; font-weight: 500; cursor: pointer; }
+      #send:disabled { background: #dadce0; color: #80868b; cursor: default; }
+      #send.danger { background: #c5221f; }
+      #status { margin-top: 10px; min-height: 30px; font-size: 12px; white-space: pre-wrap; }
+      #status.ok { color: #188038; }
+      #status.err { color: #c5221f; }
+      .loading { color: #5f6368; }
+    </style>
+  </head>
+  <body>
+    <div id="app" class="loading">Loading events…</div>
+
+    <script>
+      var DATA = null;
+      var EVENTS_BY_KEY = {};
+
+      var TPL_DESC = {
+        welcome:    "Initial RSVP response — confirms date, time & address",
+        reminder:   "Same-day / day-before nudge with event details",
+        missed_you: "Signed up but didn't attend — invites to the next event",
+        follow_up:  "Attended — thank you + invite to the next event"
+      };
+      var MODE_HINT = {
+        dry:    "Nothing is sent — rows are logged to the tracking sheet as Pending.",
+        test:   "", // filled with test recipient at load
+        actual: "⚠ Sends REAL emails to everyone in this audience (skipping anyone already emailed)."
+      };
+
+      google.script.run
+        .withSuccessHandler(init)
+        .withFailureHandler(function(e) {
+          document.getElementById('app').innerHTML =
+            '<span style="color:#c5221f">Failed to load: ' + esc(e.message) + '</span>';
+        })
+        .getEmailComposerData();
+
+      function esc(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      }
+
+      function init(data) {
+        DATA = data;
+        MODE_HINT.test = "Emails go only to " + data.testRecipient + ", built with a real individual's name & details.";
+        data.upcoming.concat(data.past).forEach(function(e) { EVENTS_BY_KEY[e.eventKey] = e; });
+
+        var evOptions = '';
+        if (data.upcoming.length) {
+          evOptions += '<optgroup label="Upcoming">';
+          data.upcoming.forEach(function(e) {
+            evOptions += '<option value="' + esc(e.eventKey) + '">' + esc(e.title) + ' — ' + esc(e.dayOfWeek + ', ' + e.dateStr) + '</option>';
+          });
+          evOptions += '</optgroup>';
+        }
+        if (data.past.length) {
+          evOptions += '<optgroup label="Past">';
+          data.past.forEach(function(e) {
+            evOptions += '<option value="' + esc(e.eventKey) + '">' + esc(e.title) + ' — ' + esc(e.dateStr) + '</option>';
+          });
+          evOptions += '</optgroup>';
+        }
+
+        var tplRadios = data.templates.map(function(t, i) {
+          return '<label class="tpl"><input type="radio" name="tpl" value="' + t.key + '"' + (i === 0 ? ' checked' : '') + '>' +
+            '<span><b>' + esc(t.label) + '</b><br><span class="desc">' + esc(TPL_DESC[t.key] || '') + '</span></span>' +
+            '<span class="count" id="count-' + t.key + '">–</span></label>';
+        }).join('');
+
+        var modes = ['dry', 'test', 'actual'].map(function(m) {
+          var sel = (m === 'test');
+          return '<label id="mode-' + m + '" class="' + (sel ? 'sel' : '') + (m === 'actual' ? ' danger' : '') + '">' +
+            '<input type="radio" name="mode" value="' + m + '"' + (sel ? ' checked' : '') + '>' +
+            m.charAt(0).toUpperCase() + m.slice(1) + '</label>';
+        }).join('');
+
+        document.getElementById('app').className = '';
+        document.getElementById('app').innerHTML =
+          '<div class="section"><label class="block">Event</label><select id="event">' + evOptions + '</select></div>' +
+          '<div class="section"><label class="block">Email type</label>' + tplRadios + '</div>' +
+          '<div class="section"><label class="block">Mode</label><div class="modes">' + modes + '</div>' +
+          '<div class="modehint" id="modehint"></div></div>' +
+          '<button id="send">Send</button><div id="status"></div>';
+
+        document.getElementById('event').addEventListener('change', refresh);
+        Array.prototype.forEach.call(document.querySelectorAll('input[name=tpl], input[name=mode]'), function(el) {
+          el.addEventListener('change', refresh);
+        });
+        document.getElementById('send').addEventListener('click', send);
+        refresh();
+      }
+
+      function selected(name) {
+        var el = document.querySelector('input[name=' + name + ']:checked');
+        return el ? el.value : null;
+      }
+
+      function refresh() {
+        var ev = EVENTS_BY_KEY[document.getElementById('event').value];
+        var tpl = selected('tpl');
+        var mode = selected('mode');
+
+        DATA.templates.forEach(function(t) {
+          var n = ev ? (ev.counts[t.key] || 0) : 0;
+          var el = document.getElementById('count-' + t.key);
+          el.textContent = n + (n === 1 ? ' person' : ' people');
+          el.className = 'count' + (n === 0 ? ' zero' : '');
+        });
+
+        ['dry', 'test', 'actual'].forEach(function(m) {
+          var lab = document.getElementById('mode-' + m);
+          lab.className = (m === mode ? 'sel' : '') + (m === 'actual' ? ' danger' : '');
+        });
+        document.getElementById('modehint').textContent = MODE_HINT[mode] || '';
+
+        var btn = document.getElementById('send');
+        var n = ev ? (ev.counts[tpl] || 0) : 0;
+        btn.className = (mode === 'actual') ? 'danger' : '';
+        btn.disabled = !ev || n === 0;
+        btn.textContent = !ev ? 'Send'
+          : (n === 0 ? 'No recipients for this combination'
+          : (mode === 'dry' ? 'Dry run for ' : mode === 'test' ? 'Send test built from ' : 'Send to ') +
+            n + (n === 1 ? ' person' : ' people'));
+      }
+
+      function send() {
+        var payload = {
+          eventKey: document.getElementById('event').value,
+          templateKey: selected('tpl'),
+          mode: selected('mode')
+        };
+        if (payload.mode === 'actual') {
+          var ev = EVENTS_BY_KEY[payload.eventKey];
+          var n = ev ? ev.counts[payload.templateKey] : 0;
+          if (!confirm('Send REAL emails to up to ' + n + ' people for "' + ev.title + '"?')) return;
+        }
+
+        var btn = document.getElementById('send');
+        var status = document.getElementById('status');
+        btn.disabled = true;
+        status.className = '';
+        status.textContent = 'Working…';
+
+        google.script.run
+          .withSuccessHandler(function(msg) {
+            status.className = 'ok';
+            status.textContent = '✓ ' + msg;
+            refresh();
+          })
+          .withFailureHandler(function(e) {
+            status.className = 'err';
+            status.textContent = '✗ ' + e.message;
+            refresh();
+          })
+          .sendComposerEmail(payload);
+      }
+    </script>
+  </body>
+</html>

@@ -47,15 +47,6 @@ function sendEmails() {
     // Applies to the sheet-built list in "dry"/"actual" modes; TEST_RECIPIENTS
     // in "test" mode are not filtered (they're explicitly chosen).
     EXCLUDE_EMAILS: [
-        "jmarieloveshorses@gmail.com",
-        "turner/usmarine@yahoo.com",
-        "lucretiabates.1b@gmail.com",
-        "Fernettapitts@gmail.com",
-        "AkashVenkataramanan2@gmail.com",
-        "kejholliday@gmail.com",
-        "lkristjansson@hotmail.com",
-        "juanjgarcia2000@yahoo.com",
-        "kyleddamron@gmail.com",
         ],
 
     // If true, skip emails that were already sent with the same SUBJECT in a previous run.
