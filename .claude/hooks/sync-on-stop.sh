@@ -11,6 +11,9 @@
 # made directly in the browser Apps Script editor.
 set -uo pipefail
 
+# clasp lives in the user-local node install, which isn't on the hook's PATH.
+export PATH="$HOME/.local/node/bin:$PATH"
+
 # Consume the hook's stdin JSON (unused).
 cat >/dev/null 2>&1 || true
 

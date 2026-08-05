@@ -287,6 +287,49 @@ function createYearlySummarySection_(sheet, startRow) {
 }
 
 /**
+ * Top 10 RSVP'd events across ALL years (table + bar chart), placed on the
+ * overview sheet. Each row shows the event name with its year so repeated
+ * topics from different years stay distinguishable.
+ */
+function createAllYearsTopRSVPSection_(sheet, startRow) {
+  const events = extractEventData();
+  const top = events
+    .filter(e => e.rsvp > 0)
+    .sort((a, b) => b.rsvp - a.rsvp)
+    .slice(0, 10);
+
+  startRow = writeTitle_(sheet, startRow, 1, "Top 10 RSVP'd Events — All Years", 13);
+
+  if (top.length === 0) {
+    sheet.getRange(startRow, 1).setValue("No RSVP data found.");
+    return startRow + 2;
+  }
+
+  const headers  = ["Event", "RSVP Count"];
+  const dataRows = top.map(e => {
+    const year = getYearFromDate_(e.date);
+    return [e.name + (year ? " (" + year + ")" : ""), e.rsvp];
+  });
+  const data = [headers, ...dataRows];
+
+  sheet.getRange(startRow, 1, data.length, 2).setValues(data);
+  sheet.getRange(startRow, 1, 1, 2).setFontWeight("bold").setBackground("#D8E4BC");
+  sheet.getRange(startRow + 1, 2, dataRows.length, 1).setNumberFormat("0");
+
+  insertBarChart_(
+    sheet,
+    sheet.getRange(startRow, 1, data.length, 2),
+    startRow, 4,
+    "Top 10 RSVP'd Events — All Years",
+    "#4285F4",
+    top.length,
+    "RSVP Count"
+  );
+
+  return startRow + data.length + 2;
+}
+
+/**
  * Frequent Attendees section (3+ events attended), placed on the overview sheet.
  */
 function createFrequentAttendeesSection_(sheet, startRow) {
@@ -551,6 +594,10 @@ function createRSVPvsAttendanceChart() {
 
   // All-years summary table + charts
   row = createYearlySummarySection_(sheet, row);
+
+  // Top 10 RSVP'd events across all years
+  row = createAllYearsTopRSVPSection_(sheet, row);
+  row += 2;
 
   // Frequent attendees
   row = createFrequentAttendeesSection_(sheet, row);
