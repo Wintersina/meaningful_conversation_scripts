@@ -36,6 +36,7 @@ function onOpen() {
         .addItem("Mark Attendance from Signup Sheet", 'markAttendanceFromSignupSheet')
         // .addItem("Sync Events to Google Calendar", 'syncEventsToGoogleCalendar')
         .addItem("Email Composer…", 'showEmailComposerDialog')
+        .addItem("Email Composer (no popup)", 'emailComposerPromptFlow')
         // .addSubMenu(ui.createMenu('Lifecycle Emails')
         //     .addItem("Send Welcome Emails (Upcoming Events)", 'sendWelcomeEmails')
         //     .addItem("Send Reminder Emails (Today/Tomorrow)", 'sendReminderEmails')
