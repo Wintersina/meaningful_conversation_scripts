@@ -4,13 +4,13 @@
  * people each template would reach, and sends the chosen lifecycle template
  * to the people in that event's column.
  *
- * Server side of scripts/email_composer.html. Sending goes through
+ * Server side of scripts/email_composer_dialog.html. Sending goes through
  * runLifecycleEmailer_ with the picked event as an explicit override, so all
  * MODE semantics and idempotency tracking behave exactly like the menu runs.
  */
 
 function showEmailComposerDialog() {
-  var html = HtmlService.createHtmlOutputFromFile("email_composer")
+  var html = HtmlService.createHtmlOutputFromFile("email_composer_dialog")
     .setWidth(480)
     .setHeight(600);
   SpreadsheetApp.getUi().showModalDialog(html, "Email Composer");
