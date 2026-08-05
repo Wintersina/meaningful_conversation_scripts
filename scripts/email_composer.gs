@@ -10,9 +10,13 @@
  */
 
 function showEmailComposerDialog() {
-  var html = HtmlService.createHtmlOutputFromFile("email_composer_dialog")
-    .setWidth(480)
-    .setHeight(600);
+  // Inject the data at render time instead of fetching it via google.script.run:
+  // dialog->server calls silently bind to the browser's DEFAULT Google session,
+  // which fails with PERMISSION_DENIED when several accounts are signed in.
+  // Escaping "<" keeps any "</script>"-like content from breaking the page.
+  var t = HtmlService.createTemplateFromFile("email_composer_dialog");
+  t.bootData = JSON.stringify(getEmailComposerData()).replace(/</g, "\\u003c");
+  var html = t.evaluate().setWidth(480).setHeight(600);
   SpreadsheetApp.getUi().showModalDialog(html, "Email Composer");
 }
 

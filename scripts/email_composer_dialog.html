@@ -49,13 +49,14 @@
         actual: "⚠ Sends REAL emails to everyone in this audience (skipping anyone already emailed)."
       };
 
-      google.script.run
-        .withSuccessHandler(init)
-        .withFailureHandler(function(e) {
-          document.getElementById('app').innerHTML =
-            '<span style="color:#c5221f">Failed to load: ' + esc(e.message) + '</span>';
-        })
-        .getEmailComposerData();
+      // Data is injected server-side when the dialog is created (no
+      // google.script.run needed to load — avoids multi-account session issues).
+      try {
+        init(JSON.parse(<?!= JSON.stringify(bootData) ?>));
+      } catch (e) {
+        document.getElementById('app').innerHTML =
+          '<span style="color:#c5221f">Failed to load: ' + esc(e.message) + '</span>';
+      }
 
       function esc(s) {
         return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
