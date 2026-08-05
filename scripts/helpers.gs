@@ -3,7 +3,6 @@ const SHEET_NAMES = {
   EVENTBRITE: "EventBrite Import",
   CONTACT_LIST: "Contact List"
 };
-SHEET_NAMES.FACEBOOK = "FaceBook Import";
 SHEET_NAMES.SIGNUP = "STL MO Barcode (signup sheet)";
 
 const ERROR_MESSAGES = {
@@ -79,7 +78,6 @@ const HELPER_CONSTANTS = {
   MAX_ROW_CHECK: 3000,
   EVENT_NAMES_START_COL: 15
 };
-HELPER_CONSTANTS.FACEBOOK_COLUMN_COUNT = 3;
 
 const FORMULAS = {
   CONCATENATE_NAME: (row) => `=IF(ISTEXT(C${row}),CONCATENATE(C${row}, " ", D${row}),"")`,

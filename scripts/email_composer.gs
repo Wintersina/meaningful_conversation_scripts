@@ -45,11 +45,17 @@ function showEmailComposerDialog() {
  * Web-app entry point. Without params: the composer UI in a full tab.
  * With action=send (the popup's Send hop): perform the send as the accessing
  * (authuser-pinned) account and render a small result page.
+ * With page=facebook: the Facebook CSV importer UI in a full tab.
  */
 function doGet(e) {
   var p = (e && e.parameter) || {};
   if (p.action === "send") {
     return handleComposerSendRequest_(p);
+  }
+  if (p.page === "facebook") {
+    return buildFacebookCsvImportHtml_("webapp")
+      .setTitle("Facebook CSV Import")
+      .addMetaTag("viewport", "width=device-width, initial-scale=1");
   }
   return buildComposerHtml_("webapp")
     .setTitle("Email Composer")

@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body { font-family: 'Google Sans', Roboto, Arial, sans-serif; margin: 0; padding: 16px; color: #202124; font-size: 13px; }
+      .hint { color: #5f6368; font-size: 11.5px; margin: 0 0 10px; }
+      select, button, input[type=file] { font: inherit; }
+      select { width: 100%; padding: 6px; border: 1px solid #dadce0; border-radius: 6px; background: #fff; }
+      .section { margin-bottom: 14px; }
+      label.block { display: block; font-weight: 500; margin-bottom: 4px; }
+      #drop { border: 2px dashed #dadce0; border-radius: 10px; padding: 22px 12px; text-align: center; color: #5f6368; cursor: pointer; }
+      #drop.over { border-color: #1a73e8; background: #e8f0fe; color: #1967d2; }
+      #drop.loaded { border-style: solid; border-color: #188038; background: #e6f4ea; color: #188038; }
+      #drop b { color: #1a73e8; }
+      #drop.loaded b { color: #188038; }
+      .maprow { display: flex; gap: 8px; }
+      .maprow > div { flex: 1; }
+      .maprow label { display: block; font-size: 11.5px; color: #5f6368; margin-bottom: 3px; }
+      .summary { margin-top: 8px; font-size: 12px; }
+      .summary .keep { color: #188038; font-weight: 500; }
+      .summary .skip { color: #5f6368; }
+      .names { color: #5f6368; font-size: 11.5px; margin-top: 3px; }
+      .check { display: flex; align-items: center; gap: 7px; padding: 6px 0; cursor: pointer; }
+      .check input { margin: 0; }
+      #importBtn { width: 100%; padding: 9px; border: 0; border-radius: 8px; background: #1a73e8; color: #fff; font-weight: 500; cursor: pointer; }
+      #importBtn:disabled { background: #dadce0; color: #80868b; cursor: default; }
+      #status { margin-top: 10px; min-height: 30px; font-size: 12px; white-space: pre-wrap; }
+      #status.ok { color: #188038; }
+      #status.err { color: #c5221f; }
+      .hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <div class="section">
+      <div id="drop">
+        <b>Drop the Facebook guest-list CSV here</b><br>
+        or click to browse
+      </div>
+      <input type="file" id="file" accept=".csv,text/csv" class="hidden">
+    </div>
+
+    <div id="mapping" class="section hidden">
+      <div class="maprow">
+        <div>
+          <label for="nameCol">Guest name column</label>
+          <select id="nameCol"></select>
+        </div>
+        <div>
+          <label for="statusCol">Status column</label>
+          <select id="statusCol"></select>
+        </div>
+      </div>
+      <div class="summary" id="summary"></div>
+      <div class="names" id="names"></div>
+    </div>
+
+    <div class="section">
+      <label class="block" for="event">Import under event</label>
+      <select id="event"></select>
+      <p class="hint" style="margin:6px 0 0">Guests are staged as EventBrite-style rows (Platform = FB) and flow into this event's block through the regular EventBrite import, which marks them RSVP'd: yes — so only guests marked <b>Going</b> are imported.</p>
+    </div>
+
+    <div class="section">
+      <label class="check"><input type="checkbox" id="moveNow" checked> Move into the Contact List right away (also moves any EventBrite rows already staged)</label>
+    </div>
+
+    <button id="importBtn" disabled>Import</button>
+    <div id="status"></div>
+
+    <script>
+      var CSV = null; // { rows, hasHeader, columnCount, firstIdx, lastIdx }
+      var KEPT = [];  // [[first, last], ...] currently selected for import
+      var DATA = null;
+
+      var COMBINED = "__first_last__";
+      var NO_STATUS = "__none__";
+
+      // "dialog" (in-sheet popup) or "webapp" (full tab). In dialog mode Import
+      // hops through the web app pinned to the team account, because iframe
+      // google.script.run calls bind to the browser's default Google session.
+      var UI_MODE = <?!= JSON.stringify(uiMode) ?>;
+
+      // Data is injected server-side when the dialog is created (no
+      // google.script.run needed to load — avoids multi-account session issues).
+      try {
+        initEvents(JSON.parse(<?!= JSON.stringify(bootData) ?>));
+      } catch (e) {
+        document.getElementById('status').className = 'err';
+        document.getElementById('status').textContent = 'Failed to load events: ' + e.message;
+      }
+
+      function esc(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      }
+
+      function initEvents(data) {
+        DATA = data;
+        var opts = '';
+        if (data.upcoming.length) {
+          opts += '<optgroup label="Upcoming">';
+          data.upcoming.forEach(function(e) {
+            opts += '<option value="' + esc(e.title) + '">' + esc(e.title) + ' — ' + esc(e.dayOfWeek + ', ' + e.dateStr) + '</option>';
+          });
+          opts += '</optgroup>';
+        }
+        if (data.past.length) {
+          opts += '<optgroup label="Past">';
+          data.past.forEach(function(e) {
+            opts += '<option value="' + esc(e.title) + '">' + esc(e.title) + ' — ' + esc(e.dateStr) + '</option>';
+          });
+          opts += '</optgroup>';
+        }
+        document.getElementById('event').innerHTML =
+          opts || '<option value="">No matchable events found in the Contact List</option>';
+      }
+
+      // ------------------------------------------------------------------
+      // File loading
+      // ------------------------------------------------------------------
+      var drop = document.getElementById('drop');
+      var fileInput = document.getElementById('file');
+
+      drop.addEventListener('click', function() { fileInput.click(); });
+      fileInput.addEventListener('change', function() {
+        if (fileInput.files.length) loadFile(fileInput.files[0]);
+      });
+      ['dragenter', 'dragover'].forEach(function(ev) {
+        drop.addEventListener(ev, function(e) { e.preventDefault(); drop.classList.add('over'); });
+      });
+      drop.addEventListener('dragleave', function() { drop.classList.remove('over'); });
+      drop.addEventListener('drop', function(e) {
+        e.preventDefault();
+        drop.classList.remove('over');
+        if (e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]);
+      });
+
+      function loadFile(file) {
+        var reader = new FileReader();
+        reader.onload = function() {
+          try {
+            ingestCsv(String(reader.result), file.name);
+          } catch (err) {
+            setStatus('err', '✗ Could not read that file: ' + err.message);
+          }
+        };
+        reader.onerror = function() { setStatus('err', '✗ Could not read that file.'); };
+        reader.readAsText(file);
+      }
+
+      // ------------------------------------------------------------------
+      // CSV parsing (quoted fields, embedded commas/newlines, CRLF)
+      // ------------------------------------------------------------------
+      function parseCsv(text) {
+        var rows = [], row = [], cell = '', inQ = false;
+        for (var i = 0; i < text.length; i++) {
+          var c = text[i];
+          if (inQ) {
+            if (c === '"') {
+              if (text[i + 1] === '"') { cell += '"'; i++; }
+              else inQ = false;
+            } else cell += c;
+          } else if (c === '"') {
+            inQ = true;
+          } else if (c === ',') {
+            row.push(cell); cell = '';
+          } else if (c === '\n' || c === '\r') {
+            if (c === '\r' && text[i + 1] === '\n') i++;
+            row.push(cell); cell = '';
+            rows.push(row); row = [];
+          } else {
+            cell += c;
+          }
+        }
+        if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+        return rows.filter(function(r) {
+          return r.some(function(x) { return String(x).trim() !== ''; });
+        });
+      }
+
+      function ingestCsv(text, fileName) {
+        var rows = parseCsv(text);
+        if (!rows.length) throw new Error('the file is empty.');
+
+        var header = rows[0].map(function(h) { return String(h).trim().toLowerCase(); });
+        var hasHeader = header.some(function(h) { return /name/.test(h); });
+        var columnCount = rows.reduce(function(m, r) { return Math.max(m, r.length); }, 0);
+
+        CSV = {
+          rows: rows,
+          hasHeader: hasHeader,
+          columnCount: columnCount,
+          firstIdx: hasHeader ? header.findIndex(function(h) { return /first[\s_]?name/.test(h); }) : -1,
+          lastIdx:  hasHeader ? header.findIndex(function(h) { return /last[\s_]?name|surname/.test(h); }) : -1
+        };
+
+        // Auto-pick: a full-name column, else First+Last combined, else column A.
+        var nameGuess = hasHeader
+          ? header.findIndex(function(h) { return h === 'name' || /guest|full[\s_]?name/.test(h); })
+          : 0;
+        if (nameGuess === -1 && CSV.firstIdx !== -1 && CSV.lastIdx !== -1) nameGuess = COMBINED;
+        if (nameGuess === -1) nameGuess = 0;
+
+        var statusGuess = hasHeader
+          ? header.findIndex(function(h) { return /status|rsvp|response|going/.test(h); })
+          : (columnCount > 1 ? 1 : -1);
+        if (statusGuess === -1) statusGuess = NO_STATUS;
+
+        buildColumnSelects(nameGuess, statusGuess);
+
+        drop.classList.add('loaded');
+        drop.innerHTML = '<b>' + esc(fileName) + '</b> — ' +
+          (rows.length - (hasHeader ? 1 : 0)) + ' rows. Click to pick a different file.';
+        document.getElementById('mapping').classList.remove('hidden');
+        setStatus('', '');
+        recompute();
+      }
+
+      function columnLabel(i) {
+        var letter = String.fromCharCode(65 + (i % 26));
+        var head = CSV.hasHeader ? String(CSV.rows[0][i] || '').trim() : '';
+        var sample = CSV.rows[CSV.hasHeader ? 1 : 0];
+        var sampleVal = sample ? String(sample[i] || '').trim() : '';
+        return (head || 'Column ' + letter) + (sampleVal ? ' (e.g. "' + sampleVal + '")' : '');
+      }
+
+      function buildColumnSelects(nameSel, statusSel) {
+        var nameOpts = '';
+        var statusOpts = '<option value="' + NO_STATUS + '">(none — treat everyone as Going)</option>';
+        if (CSV.firstIdx !== -1 && CSV.lastIdx !== -1) {
+          nameOpts += '<option value="' + COMBINED + '">First + Last name combined</option>';
+        }
+        for (var i = 0; i < CSV.columnCount; i++) {
+          var opt = '<option value="' + i + '">' + esc(columnLabel(i)) + '</option>';
+          nameOpts += opt;
+          statusOpts += opt;
+        }
+        var nameEl = document.getElementById('nameCol');
+        var statusEl = document.getElementById('statusCol');
+        nameEl.innerHTML = nameOpts;
+        statusEl.innerHTML = statusOpts;
+        nameEl.value = String(nameSel);
+        statusEl.value = String(statusSel);
+      }
+
+      // ------------------------------------------------------------------
+      // Row selection
+      // ------------------------------------------------------------------
+      function isGoing(status) {
+        return /^(going|yes)$/i.test(String(status).trim());
+      }
+
+      // "Mary Jane Tkacz" -> first "Mary", last "Jane Tkacz" (same as the old
+      // FaceBook Import split).
+      function splitName(fullName) {
+        var parts = String(fullName || '').trim().replace(/\s+/g, ' ').split(' ');
+        if (!parts[0]) return null;
+        return [parts[0], parts.slice(1).join(' ')];
+      }
+
+      function recompute() {
+        var btn = document.getElementById('importBtn');
+        var eventTitle = document.getElementById('event').value;
+        if (!CSV) {
+          btn.disabled = true;
+          btn.textContent = 'Import';
+          return;
+        }
+
+        var nameSel = document.getElementById('nameCol').value;
+        var statusSel = document.getElementById('statusCol').value;
+
+        KEPT = [];
+        var skipped = 0;
+        var start = CSV.hasHeader ? 1 : 0;
+        for (var r = start; r < CSV.rows.length; r++) {
+          var row = CSV.rows[r];
+          var guest = (nameSel === COMBINED)
+            ? [String(row[CSV.firstIdx] || '').trim(), String(row[CSV.lastIdx] || '').trim()]
+            : splitName(row[Number(nameSel)]);
+          if (!guest || !guest[0]) continue;
+
+          var status = (statusSel === NO_STATUS) ? 'Going' : String(row[Number(statusSel)] || '').trim();
+          if (!isGoing(status)) { skipped++; continue; }
+          KEPT.push(guest);
+        }
+
+        var summary = '<span class="keep">' + KEPT.length + ' guest' + (KEPT.length === 1 ? '' : 's') + ' will be imported.</span>';
+        if (skipped) summary += ' <span class="skip">' + skipped + ' skipped (not marked Going).</span>';
+        document.getElementById('summary').innerHTML = summary;
+        document.getElementById('names').textContent = KEPT.length
+          ? 'First guests: ' + KEPT.slice(0, 3).map(function(g) { return (g[0] + ' ' + g[1]).trim(); }).join(', ') + (KEPT.length > 3 ? ', …' : '')
+          : '';
+
+        btn.disabled = !eventTitle || KEPT.length === 0;
+        btn.textContent = KEPT.length === 0 ? 'No guests to import'
+          : 'Import ' + KEPT.length + ' guest' + (KEPT.length === 1 ? '' : 's');
+      }
+
+      ['nameCol', 'statusCol', 'event', 'moveNow'].forEach(function(id) {
+        document.getElementById(id).addEventListener('change', recompute);
+      });
+
+      // ------------------------------------------------------------------
+      // Import
+      // ------------------------------------------------------------------
+      document.getElementById('importBtn').addEventListener('click', function() {
+        var btn = this;
+        var payload = {
+          guests: KEPT,
+          eventTitle: document.getElementById('event').value,
+          moveNow: document.getElementById('moveNow').checked
+        };
+
+        if (UI_MODE === 'dialog') {
+          // Popup iframe: google.script.run binds to the browser's default
+          // Google session (PERMISSION_DENIED under multi-login), so POST the
+          // payload to the web app pinned to the team account instead. A form
+          // is used because guest lists are too large for GET query params.
+          var form = document.createElement('form');
+          form.method = 'post';
+          form.action = DATA.webappUrl + '?action=fbimport&authuser=' + encodeURIComponent(DATA.sendAccount);
+          form.target = '_blank';
+          var actionField = document.createElement('input');
+          actionField.type = 'hidden';
+          actionField.name = 'action';
+          actionField.value = 'fbimport';
+          var payloadField = document.createElement('input');
+          payloadField.type = 'hidden';
+          payloadField.name = 'payload';
+          payloadField.value = JSON.stringify(payload);
+          form.appendChild(actionField);
+          form.appendChild(payloadField);
+          document.body.appendChild(form);
+          form.submit();
+          form.remove();
+          setStatus('ok', '✓ Import opened in a new tab (as ' + DATA.sendAccount + ') — the result appears there. You can close this popup.');
+          return;
+        }
+
+        btn.disabled = true;
+        setStatus('', 'Working…');
+
+        google.script.run
+          .withSuccessHandler(function(msg) {
+            setStatus('ok', '✓ ' + msg);
+            recompute();
+          })
+          .withFailureHandler(function(e) {
+            setStatus('err', '✗ ' + e.message);
+            recompute();
+          })
+          .importFacebookGuests(payload);
+      });
+
+      function setStatus(cls, msg) {
+        var el = document.getElementById('status');
+        el.className = cls;
+        el.textContent = msg;
+      }
+
+      recompute();
+    </script>
+  </body>
+</html>
