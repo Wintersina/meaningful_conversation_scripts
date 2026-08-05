@@ -47,7 +47,9 @@ function lifecycleEmailerConfig_() {
 
     // Event details used in bodies
     EVENT_TIME: "6:30 PM – 8:00 PM", // matches the calendar sync window
-    DEFAULT_ADDRESS: "",             // fallback when Schedule col E has no location
+    // Fallback when Schedule col E has no real location (blank/TBD).
+    // The room from Contact List Row 4 (e.g. "Rm 208") is added on its own.
+    DEFAULT_ADDRESS: "University City Public Library\n6701 Delmar Blvd, University City, MO 63130",
 
     TRACKING_SHEET_NAME: "Lifecycle Email Tracking",
     // Dates are parsed into script-timezone midnights (parseEventDate_), so
@@ -312,6 +314,7 @@ function getAllEventColumns_(contactSheet, config) {
   if (endCol < startCol) return [];
 
   var numCols = endCol - startCol + 1;
+  var rooms = contactSheet.getRange(ROW_NUMBERS.ROW_4, startCol, 1, numCols).getValues()[0];
   var dates = contactSheet.getRange(ROW_NUMBERS.ROW_6, startCol, 1, numCols).getValues()[0];
   var titles = contactSheet.getRange(ROW_NUMBERS.ROW_7, startCol, 1, numCols).getValues()[0];
 
@@ -329,6 +332,7 @@ function getAllEventColumns_(contactSheet, config) {
       col1: startCol + i,     // 1-based sheet column
       title: title,
       normTitle: normalizeByStrippingWhiteSpaceAtTheEnd(title),
+      room: rooms[i] ? String(rooms[i]).trim() : "", // Row 4, e.g. "Rm 208"
       date: eventDate,
       dateKey: key,
       eventKey: title + "|" + key, // same topic on a new date is a new send
@@ -454,9 +458,12 @@ function getScheduleLocationMap_(scheduleSheet) {
  * Message bodies (one builder per template)
  * ———————————————————————————————————————————————————————— */
 
-/** Shared: "Day, Date / Time / Title / Address" details block. */
+/** Shared: "Day, Date / Time / Title / Address / Room" details block. */
 function eventDetailsBlock_(ev, address, config) {
-  return ev.dayOfWeek + ", " + ev.dateStr + "\n" + config.EVENT_TIME + "\n" + ev.title + (address ? "\n" + address : "");
+  var lines = [ev.dayOfWeek + ", " + ev.dateStr, config.EVENT_TIME, ev.title];
+  if (address) lines.push(address);
+  if (ev.room) lines.push(ev.room);
+  return lines.join("\n");
 }
 
 /** Shared: paragraphs → {text, html}. Empty/null paragraphs are dropped. */
