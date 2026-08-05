@@ -49,6 +49,11 @@
         actual: "⚠ Sends REAL emails to everyone in this audience (skipping anyone already emailed)."
       };
 
+      // "dialog" (in-sheet popup) or "webapp" (full tab). In dialog mode Send
+      // hops through the web app pinned to the team account, because iframe
+      // google.script.run calls bind to the browser's default Google session.
+      var UI_MODE = <?!= JSON.stringify(uiMode) ?>;
+
       // Data is injected server-side when the dialog is created (no
       // google.script.run needed to load — avoids multi-account session issues).
       try {
@@ -161,8 +166,26 @@
         var status = document.getElementById('status');
         btn.disabled = true;
         status.className = '';
-        status.textContent = 'Working…';
 
+        if (UI_MODE === 'dialog') {
+          // Hop through the web app pinned to the team account: an iframe's
+          // google.script.run binds to the browser's default session, which
+          // fails with PERMISSION_DENIED when several accounts are signed in.
+          var url = DATA.webappUrl +
+            '?action=send' +
+            '&templateKey=' + encodeURIComponent(payload.templateKey) +
+            '&eventKey=' + encodeURIComponent(payload.eventKey) +
+            '&mode=' + encodeURIComponent(payload.mode) +
+            '&authuser=' + encodeURIComponent(DATA.sendAccount);
+          window.open(url, '_blank');
+          status.className = 'ok';
+          status.textContent = 'Sending in a new tab as ' + DATA.sendAccount +
+            ' — the result appears there. You can close that tab when done.';
+          refresh();
+          return;
+        }
+
+        status.textContent = 'Working…';
         google.script.run
           .withSuccessHandler(function(msg) {
             status.className = 'ok';

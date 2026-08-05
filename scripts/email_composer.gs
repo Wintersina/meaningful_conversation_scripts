@@ -1,58 +1,80 @@
 /**
- * Email Composer dialog — a popup (Custom Actions → "Email Composer…") that
- * preloads every event from the Contact List (upcoming first), shows how many
- * people each template would reach, and sends the chosen lifecycle template
- * to the people in that event's column.
+ * Email Composer — a popup (Custom Actions → "Email Composer…") that preloads
+ * every event from the Contact List (upcoming first), shows how many people
+ * each template would reach, and sends the chosen lifecycle template to the
+ * people in that event's column.
  *
- * Server side of scripts/email_composer_dialog.html. Sending goes through
- * runLifecycleEmailer_ with the picked event as an explicit override, so all
- * MODE semantics and idempotency tracking behave exactly like the menu runs.
+ * Multi-account note: the popup iframe's google.script.run calls bind to the
+ * browser's DEFAULT Google session and fail with PERMISSION_DENIED when other
+ * accounts are signed in. So the popup's Send instead hops through the web-app
+ * deployment: it opens COMPOSER_WEBAPP_URL?action=send&…&authuser=<team acct>
+ * in a small tab, where doGet performs the send pinned to the team account and
+ * shows the result. All picking still happens in the popup; data is injected
+ * at render time so loading never round-trips either.
+ *
+ * Sending goes through runLifecycleEmailer_ with the picked event as an
+ * explicit override, so MODE semantics and idempotency match the menu runs.
  */
 
-function buildComposerHtml_() {
-  // Inject the data at render time instead of fetching it via google.script.run:
-  // dialog->server calls silently bind to the browser's DEFAULT Google session,
-  // which fails with PERMISSION_DENIED when several accounts are signed in.
+// Stable /exec URL of the web-app deployment (redeployed by the Stop hook)
+// and the team account sends are pinned to.
+var COMPOSER_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbxzhOFuUC6a58bOZgN5qw60jIEdcVOep8fFSzXO2SttE9Qu_vUqadNvgW9J4c9HzCGI/exec";
+var COMPOSER_SEND_ACCOUNT = "st.louis@meaningful-conversations.org";
+
+/**
+ * uiMode: "dialog" (in-sheet popup — Send hops via the web app URL) or
+ * "webapp" (full tab — google.script.run is session-safe there, call direct).
+ */
+function buildComposerHtml_(uiMode) {
   // Escaping "<" keeps any "</script>"-like content from breaking the page.
   var t = HtmlService.createTemplateFromFile("email_composer_dialog");
-  t.bootData = JSON.stringify(getEmailComposerData()).replace(/</g, "\\u003c");
+  var data = getEmailComposerData();
+  data.webappUrl = COMPOSER_WEBAPP_URL;
+  data.sendAccount = COMPOSER_SEND_ACCOUNT;
+  t.bootData = JSON.stringify(data).replace(/</g, "\\u003c");
+  t.uiMode = uiMode;
   return t.evaluate();
 }
 
 function showEmailComposerDialog() {
-  var html = buildComposerHtml_().setWidth(480).setHeight(600);
+  var html = buildComposerHtml_("dialog").setWidth(480).setHeight(600);
   SpreadsheetApp.getUi().showModalDialog(html, "Email Composer");
 }
 
 /**
- * Web-app entry point: the SAME composer served in its own browser tab.
- * In a full tab google.script.run binds to the account that loaded the page
- * (switchable via the account chooser / ?authuser=), so Send works even in a
- * browser signed into several Google accounts — unlike the in-sheet popup.
+ * Web-app entry point. Without params: the composer UI in a full tab.
+ * With action=send (the popup's Send hop): perform the send as the accessing
+ * (authuser-pinned) account and render a small result page.
  */
-function doGet() {
-  return buildComposerHtml_()
+function doGet(e) {
+  var p = (e && e.parameter) || {};
+  if (p.action === "send") {
+    return handleComposerSendRequest_(p);
+  }
+  return buildComposerHtml_("webapp")
     .setTitle("Email Composer")
     .addMetaTag("viewport", "width=device-width, initial-scale=1");
 }
 
-// Stable /exec URL of the web-app deployment (updated by `clasp deploy -i …`).
-var COMPOSER_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbxzhOFuUC6a58bOZgN5qw60jIEdcVOep8fFSzXO2SttE9Qu_vUqadNvgW9J4c9HzCGI/exec";
-
-/** Small dialog with a link that opens the composer web app in a new tab. */
-function showComposerWebAppLink() {
-  var url = COMPOSER_WEBAPP_URL + "?authuser=st.louis@meaningful-conversations.org";
-  var html = HtmlService.createHtmlOutput(
-    '<div style="font-family:Roboto,Arial,sans-serif;font-size:13px;padding:6px">' +
-    '<p>Opens the Email Composer in its own browser tab, where sending works even ' +
-    'when several Google accounts are signed in. If prompted, choose ' +
-    '<b>st.louis@meaningful-conversations.org</b>.</p>' +
-    '<p style="text-align:center"><a href="' + url + '" target="_blank" rel="noopener" ' +
-    'style="display:inline-block;background:#1a73e8;color:#fff;padding:9px 18px;' +
-    'border-radius:8px;text-decoration:none;font-weight:500">Open Email Composer</a></p>' +
-    '</div>'
-  ).setWidth(380).setHeight(170);
-  SpreadsheetApp.getUi().showModalDialog(html, "Email Composer (browser tab)");
+function handleComposerSendRequest_(p) {
+  var ok, message;
+  try {
+    message = sendComposerEmail({ templateKey: p.templateKey, eventKey: p.eventKey, mode: p.mode });
+    ok = true;
+  } catch (err) {
+    message = (err && err.message) ? err.message : String(err);
+    ok = false;
+  }
+  var sender = Session.getActiveUser().getEmail() || "(unknown account)";
+  var html =
+    '<div style="font-family:Roboto,Arial,sans-serif;font-size:14px;max-width:560px;margin:48px auto;padding:0 16px">' +
+    '<h2 style="color:' + (ok ? "#188038" : "#c5221f") + ';margin-bottom:8px">' +
+    (ok ? "✓ Email Composer — done" : "✗ Email Composer — failed") + "</h2>" +
+    "<p>" + escapeHtml_(message) + "</p>" +
+    '<p style="color:#5f6368;font-size:12px">Ran as ' + escapeHtml_(sender) +
+    ". Re-running is safe — already-sent recipients are skipped. You can close this tab.</p>" +
+    "</div>";
+  return HtmlService.createHtmlOutput(html).setTitle("Email Composer — result");
 }
 
 /**
