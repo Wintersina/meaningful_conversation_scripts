@@ -42,10 +42,18 @@ fi
 summary="Auto-sync: pushed ${ahead} commit(s) to ${upstream}"
 
 # 4) clasp push only when scripts/ changed and clasp is set up.
+# The Email Composer web app serves a pinned deployment version, so after a
+# successful push, redeploy it to the new code.
+WEBAPP_DEPLOYMENT_ID="AKfycbxzhOFuUC6a58bOZgN5qw60jIEdcVOep8fFSzXO2SttE9Qu_vUqadNvgW9J4c9HzCGI"
 if [ -n "$scripts_changed" ]; then
   if command -v clasp >/dev/null 2>&1 && [ -f .clasp.json ]; then
     if clasp push -f >/tmp/mc_clasp.out 2>&1; then
       summary="${summary}; clasp push → live OK"
+      if clasp deploy -i "$WEBAPP_DEPLOYMENT_ID" -d "web app (auto)" >/tmp/mc_clasp_deploy.out 2>&1; then
+        summary="${summary}; web app redeployed"
+      else
+        summary="${summary}; web app redeploy FAILED (run 'clasp deploy -i ${WEBAPP_DEPLOYMENT_ID}'). See /tmp/mc_clasp_deploy.out"
+      fi
     else
       summary="${summary}; clasp push FAILED (run 'clasp push -f'). See /tmp/mc_clasp.out"
     fi
