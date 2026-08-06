@@ -30,7 +30,8 @@ function lifecycleEmailerConfig_() {
   return {
     MODE: "test", // "dry" (log only) | "test" (send to TEST_RECIPIENT) | "actual"
 
-    SENDER_NAME: "Sina", // used in greetings/sign-offs
+    SENDER_NAME: "Sina", // used in the welcome intro ("My name is …")
+    SIGNOFF_NAME: "The Meaningful Conversations Team", // used in sign-offs ("Warmly, …")
 
     // "test" mode: every email goes here, but keeps the real individual's
     // name and event details so you can proofread exactly what they'd get.
@@ -531,7 +532,7 @@ function buildWelcomeEmailBody_(firstName, ev, ctx, config) {
 
     "Looking forward to meeting you on " + ev.dayOfWeek + "!",
 
-    "Warmly,\n" + config.SENDER_NAME
+    "Warmly,\n" + config.SIGNOFF_NAME
   ]);
 }
 
@@ -550,7 +551,7 @@ function buildReminderEmailBody_(firstName, ev, ctx, config) {
 
     ALL_AGES_LINE,
 
-    "See you soon!\n" + config.SENDER_NAME
+    "See you soon!\n" + config.SIGNOFF_NAME
   ]);
 }
 
@@ -574,7 +575,7 @@ function buildMissedYouEmailBody_(firstName, ev, ctx, config) {
 
     next ? eventDetailsBlock_(next, ctx.nextAddress, config) : "",
 
-    "Warmly,\n" + config.SENDER_NAME
+    "Warmly,\n" + config.SIGNOFF_NAME
   ]);
 }
 
@@ -598,7 +599,7 @@ function buildFollowUpEmailBody_(firstName, ev, ctx, config) {
 
     "Please don't hesitate to reach out if you have any questions, or if there's anything you'd like to explore further.",
 
-    "Warmly,\n" + config.SENDER_NAME
+    "Warmly,\n" + config.SIGNOFF_NAME
   ]);
 }
 
