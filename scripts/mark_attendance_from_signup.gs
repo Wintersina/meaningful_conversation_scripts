@@ -11,7 +11,9 @@
  *   - If the cell has "attended: ?" → flip to "attended: yes" (keep RSVP prefix)
  *   - If the cell is empty / dash → set to "rsvp'd: no\nattended: yes"
  *
- * TODO: If no match is found, insert a new row with rsvp'd: no / attended: yes
+ * When NO match is found (walk-in): a new row is inserted into today's event
+ * block in the Contact List (two rows below the block title, same placement as
+ * the EventBrite import) with rsvp'd: no / attended: yes.
  */
 
 // ── Signup sheet column indices (0-based) ──────────────────────────
@@ -420,8 +422,120 @@ function updatePhoneIfNeeded_(contactListSheet, contactRow, signupPhone) {
 }
 
 /**
+ * Splits a full name into [first, last]. First token → first name,
+ * everything after → last name (may be empty for single-word names).
+ */
+function splitSignupName_(fullName) {
+  var trimmed = String(fullName || "").trim().replace(/\s+/g, " ");
+  if (!trimmed) return ["", ""];
+  var spaceIdx = trimmed.indexOf(" ");
+  if (spaceIdx === -1) return [trimmed, ""];
+  return [trimmed.substring(0, spaceIdx), trimmed.substring(spaceIdx + 1)];
+}
+
+/**
+ * Inserts a walk-in row into the Contact List for someone who signed in via
+ * barcode but has no RSVP anywhere in the sheet.
+ *
+ * Placement mirrors moveRowsFromEventBriteImportToContactList: the row goes
+ * TWO rows below the event-block title in Column B that matches today's event
+ * title (Row 7 of the resolved event column).
+ *
+ * Returns the inserted 1-based row number, or -1 if the event block could not
+ * be located (nothing is inserted in that case).
+ */
+function insertWalkInContactRow_(contactListSheet, eventCol, signupName, signupEmail, signupPhone, signupTimestamp) {
+  var eventTitle = String(contactListSheet.getRange(ROW_NUMBERS.ROW_7, eventCol).getValue() || "").trim();
+  if (!eventTitle) {
+    Logger.log("Walk-in insert skipped: no event title in row 7, col " + columnToLetter(eventCol));
+    return -1;
+  }
+
+  // Find the matching event block title in Column B (bottom-most wins, like the EB import)
+  var lastRow = contactListSheet.getLastRow();
+  var colB = contactListSheet.getRange(1, 2, lastRow, 1).getValues();
+  var matchRow = -1;
+  var normTitle = normalizeString(eventTitle);
+  for (var i = colB.length - 1; i >= 0; i--) {
+    if (normalizeString(String(colB[i][0] || "")).trim() === normTitle) {
+      matchRow = i + 1; // 1-based
+      break;
+    }
+  }
+  if (matchRow === -1) {
+    Logger.log("Walk-in insert skipped: event block '" + eventTitle + "' not found in Column B");
+    return -1;
+  }
+
+  var rsvpCol = findColMarker_(contactListSheet, MARKER_KEYS.EVENTS_RSVPD, COL_CONSTANTS.EVENTS_RSVPD);
+  var attendedCol = findColMarker_(contactListSheet, MARKER_KEYS.EVENTS_ATTENDED, COL_CONSTANTS.EVENTS_ATTENDED);
+  if (rsvpCol === -1 || attendedCol === -1) {
+    Logger.log("Walk-in insert skipped: counter columns not found");
+    return -1;
+  }
+  var attendedColLetter = columnToLetter(attendedCol);
+
+  var insertAt = matchRow + 2; // two rows below the block title
+
+  // Make sure we don't insert inside a collapsed/hidden group
+  expandRowGroupsAtRow_(contactListSheet, insertAt);
+  contactListSheet.showRows(insertAt);
+
+  contactListSheet.insertRowsBefore(insertAt, 1);
+
+  // Identity columns: C=first, D=last, F=email, G=phone
+  var nameParts = splitSignupName_(signupName);
+  contactListSheet.getRange(insertAt, 3, 1, 2).setValues([[nameParts[0], nameParts[1]]]);
+  if (signupEmail) {
+    contactListSheet.getRange(insertAt, COLUMN_INDEX.EMAIL + 1).setValue(String(signupEmail).trim());
+  }
+  if (signupPhone) {
+    contactListSheet.getRange(insertAt, COLUMN_INDEX.PHONE + 1).setValue(formatPhoneWithDashes_(signupPhone));
+  }
+
+  // Origin columns: J=signup date/time, K=platform, L=event title
+  if (signupTimestamp) {
+    contactListSheet.getRange(insertAt, COLUMN_INDEX.SIGNUP_DATE_TIME + 1).setValue(signupTimestamp);
+  }
+  contactListSheet.getRange(insertAt, COLUMN_INDEX.SIGNUP_PLATFORM + 1).setValue("Walk-in");
+  contactListSheet.getRange(insertAt, COLUMN_INDEX.SIGNUP_EVENT_TITLE + 1).setValue(eventTitle);
+
+  // Formulas: A=name concat, counter columns
+  contactListSheet.getRange(insertAt, 1).setFormula(FORMULAS.CONCATENATE_NAME(insertAt));
+  contactListSheet.getRange(insertAt, attendedCol).setFormula(FORMULAS.COUNT_ATTENDED(insertAt, attendedColLetter));
+  contactListSheet.getRange(insertAt, rsvpCol).setFormula(FORMULAS.COUNT_RSVP(insertAt, attendedColLetter));
+
+  // Today's event cell: dropdown + rsvp'd: no / attended: yes
+  var rsvpValidationRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(Object.values(RSVP_DROP_DOWN_CONSTANTS), true)
+    .setAllowInvalid(false)
+    .build();
+  var eventCell = contactListSheet.getRange(insertAt, eventCol);
+  eventCell.setDataValidation(rsvpValidationRule);
+  eventCell.setValue(RSVP_DROP_DOWN_CONSTANTS.NO_ATTENDED_YES);
+
+  // Dash-fill the remaining event columns to the right (same as EB import)
+  var dashStart = eventCol + 1;
+  var dashEnd = attendedCol - 1;
+  if (dashStart <= dashEnd) {
+    var width = dashEnd - dashStart + 1;
+    contactListSheet.getRange(insertAt, dashStart, 1, width).setValues([Array(width).fill("-")]);
+  }
+
+  // Static formatting
+  contactListSheet
+    .getRange(insertAt, 1, 1, contactListSheet.getLastColumn())
+    .setFontSize(UI_CONSTANTS.FONT_SIZE)
+    .setFontFamily(UI_CONSTANTS.FONT_STYLE)
+    .setHorizontalAlignment(UI_CONSTANTS.ALIGNMENT_CENTER);
+
+  Logger.log("Inserted walk-in row: " + signupName + " → row " + insertAt + " (block '" + eventTitle + "')");
+  return insertAt;
+}
+
+/**
  * Processes a single signup row against the Contact List.
- * Returns true if a match was found and attendance was marked.
+ * Returns "matched", "inserted", or "skipped".
  */
 function processSignupRow_(contactListSheet, contactData, signupRow) {
   var signupName = signupRow[SIGNUP_COLS.NAME];
@@ -429,21 +543,22 @@ function processSignupRow_(contactListSheet, contactData, signupRow) {
   var signupPhone = signupRow[SIGNUP_COLS.PHONE];
   var signupTimestamp = signupRow[SIGNUP_COLS.TIMESTAMP];
 
-  if (!signupName) return false;
+  if (!signupName) return "skipped";
 
   // Find the event column by matching signup date to Row 6 dates
   var eventCol = findEventColumnByDate_(contactData, signupTimestamp);
   if (eventCol === -1) {
     Logger.log("No event column found for date: " + signupTimestamp + " (name: " + signupName + ")");
-    return false;
+    return "skipped";
   }
 
   // Find matching contact row
   var contactRow = findContactMatch_(contactData, signupName, signupEmail, signupPhone);
   if (contactRow === -1) {
-    // TODO: Insert new row with rsvp'd: no / attended: yes
-    Logger.log("NO MATCH FOUND for: " + signupName + " (email: " + signupEmail + ", phone: " + signupPhone + ")");
-    return false;
+    // Walk-in: barcode sign-in with no RSVP anywhere — insert a fresh row
+    Logger.log("NO MATCH FOUND for: " + signupName + " (email: " + signupEmail + ", phone: " + signupPhone + ") — inserting walk-in row");
+    var insertedRow = insertWalkInContactRow_(contactListSheet, eventCol, signupName, signupEmail, signupPhone, signupTimestamp);
+    return insertedRow === -1 ? "skipped" : "inserted";
   }
 
   // Update attendance in the correct event column
@@ -464,7 +579,7 @@ function processSignupRow_(contactListSheet, contactData, signupRow) {
   // Update phone if needed
   updatePhoneIfNeeded_(contactListSheet, contactRow, signupPhone);
 
-  return true;
+  return "matched";
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -503,21 +618,28 @@ function markAttendanceFromSignupSheet() {
   var signupData = signupSheet.getRange(2, 1, lastRow - 1, Math.min(lastCol, 5)).getValues();
 
   var matched = 0;
-  var unmatched = 0;
+  var inserted = 0;
+  var skipped = 0;
 
   for (var i = 0; i < signupData.length; i++) {
     var row = signupData[i];
     if (!row[SIGNUP_COLS.NAME]) continue; // skip empty rows
 
-    var found = processSignupRow_(contactListSheet, contactData, row);
-    if (found) {
+    var result = processSignupRow_(contactListSheet, contactData, row);
+    if (result === "matched") {
       matched++;
+    } else if (result === "inserted") {
+      inserted++;
+      // Inserting a row shifts everything below it — reload the cached
+      // contact data so later signups match against fresh row numbers
+      // (and so a duplicate signup for the same walk-in now matches).
+      contactData = preloadContactData_(contactListSheet);
     } else {
-      unmatched++;
+      skipped++;
     }
   }
 
-  Logger.log("markAttendanceFromSignupSheet complete. Matched: " + matched + ", Unmatched: " + unmatched);
+  Logger.log("markAttendanceFromSignupSheet complete. Matched: " + matched + ", Walk-ins inserted: " + inserted + ", Skipped: " + skipped);
 }
 
 /**
@@ -622,8 +744,9 @@ function onSignupFormSubmit(e) {
     return;
   }
 
-  // TODO: Insert new row with rsvp'd: no / attended: yes
-  Logger.log("NO MATCH FOUND for: " + signupName + " (email: " + signupEmail + ", phone: " + signupPhone + ")");
+  // Walk-in: barcode sign-in with no matching contact anywhere — insert a fresh row
+  Logger.log("NO MATCH FOUND for: " + signupName + " (email: " + signupEmail + ", phone: " + signupPhone + ") — inserting walk-in row");
+  insertWalkInContactRow_(contactListSheet, eventCol, signupName, signupEmail, signupPhone, signupTimestamp);
 }
 
 /**
