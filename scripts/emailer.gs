@@ -173,6 +173,8 @@ function getBulkEmailerData() {
  *     filterRepeat: bool, eventTitle: "" | title,
  *     attendedMoreThan: number|null, attendedLessThan: number|null,
  *     excludeEmails: "a@x, b@y", skipAlreadySent: bool,
+ *     personalize: bool (one email per person; {{name}} in the body becomes
+ *       their first name — overrides batching),
  *     batchSingle: bool, batchMode: "bcc"|"to", batchSize: number,
  *     progressToken: string (optional, enables live progress polling)
  *   }
@@ -252,17 +254,21 @@ function sendBulkEmails(payload) {
 
   bulkProgressStart_(payload.progressToken, recipients.size);
 
+  // Personalized sends are one-email-per-person by definition, so they always
+  // take the per-recipient flows regardless of the batching checkbox.
+  var personalize = !!payload.personalize;
+
   var totals;
-  if (payload.batchSingle !== false) {
+  if (!personalize && payload.batchSingle !== false) {
     totals = batchFlow_(recipients, tracking, message, attach, subject, skipSet, payload.mode,
       payload.batchMode || BULK_EMAILER_DEFAULTS.BATCH_RECIPIENT_MODE,
       Number(payload.batchSize) || BULK_EMAILER_DEFAULTS.BATCH_SIZE);
   } else if (payload.mode === "dry") {
     totals = dryRunFlow_(recipients, tracking, message, attach, subject, skipSet);
   } else if (payload.mode === "test") {
-    totals = testRunFlow_(recipients, tracking, message, attach, subject);
+    totals = testRunFlow_(recipients, tracking, message, attach, subject, personalize);
   } else {
-    totals = actualRunFlow_(recipients, tracking, message, attach, subject, skipSet);
+    totals = actualRunFlow_(recipients, tracking, message, attach, subject, skipSet, personalize);
   }
 
   bulkProgressFlush_(true);
@@ -275,7 +281,23 @@ function sendBulkEmails(payload) {
   if (totals.messages != null && payload.mode !== "dry") parts.push(totals.messages + " message(s)");
 
   return 'Bulk email "' + subject + '" → ' + audienceLabel + ", mode " + payload.mode + ": " +
-    parts.join(", ") + "." + (attach ? ' Attachment: "' + attach.name + '".' : "");
+    parts.join(", ") + "." +
+    (personalize ? " Personalized per recipient." : "") +
+    (attach ? ' Attachment: "' + attach.name + '".' : "");
+}
+
+/**
+ * Fills the {{name}} placeholder with the recipient's first name ("there"
+ * when the sheet has no name). The HTML body was built from escaped text, so
+ * the placeholder survives intact there; the name itself is escaped going in.
+ */
+function personalizeBulkContent_(message, firstName) {
+  var name = String(firstName || "").trim() || "there";
+  var fill = function(s, n) { return String(s).replace(/\{\{\s*name\s*\}\}/gi, n); };
+  return {
+    text: fill(message.text, name),
+    html: message.html ? fill(message.html, escapeHtml_(name)) : null
+  };
 }
 
 /** ————————————————————————————————————————————————————————
@@ -690,10 +712,11 @@ function dryRunFlow_(recipients, tracking, message, attachObj, subject, alreadyS
   return totals;
 }
 
-function testRunFlow_(recipients, tracking, message, attachObj, subject) {
+function testRunFlow_(recipients, tracking, message, attachObj, subject, personalize) {
   var totals = { sent: 0, skipped: 0, failed: 0, planned: 0 };
   recipients.forEach(function(firstName, email) {
-    var res = safeSendEmail_(email, subject, message, attachObj);
+    var body = personalize ? personalizeBulkContent_(message, firstName) : message;
+    var res = safeSendEmail_(email, subject, body, attachObj);
     if (res.ok) {
       Logger.log("Test email sent to: %s (%s) with attachment: %s", firstName, email, attachObj ? attachObj.name : "None");
       appendTracking_(tracking, email, "Sent", "Test Run", firstName, "", attachObj ? attachObj.name : "None", subject);
@@ -709,7 +732,7 @@ function testRunFlow_(recipients, tracking, message, attachObj, subject) {
   return totals;
 }
 
-function actualRunFlow_(recipients, tracking, message, attachObj, subject, alreadySent) {
+function actualRunFlow_(recipients, tracking, message, attachObj, subject, alreadySent, personalize) {
   var totals = { sent: 0, skipped: 0, failed: 0, planned: 0 };
 
   // Quick pre-check: if quota is 0, mark all as failed (not already sent)
@@ -727,7 +750,8 @@ function actualRunFlow_(recipients, tracking, message, attachObj, subject, alrea
 
   recipients.forEach(function(firstName, email) {
     if (alreadySent.has(email)) { totals.skipped++; bulkProgressStep_("skipped"); return; }
-    var res = safeSendEmail_(email, subject, message, attachObj);
+    var body = personalize ? personalizeBulkContent_(message, firstName) : message;
+    var res = safeSendEmail_(email, subject, body, attachObj);
     if (res.ok) {
       Logger.log("Email sent to: %s (%s) with attachment: %s", firstName, email, attachObj ? attachObj.name : "None");
       appendTracking_(tracking, email, "Sent", "Actual Run", firstName, "", attachObj ? attachObj.name : "None", subject);

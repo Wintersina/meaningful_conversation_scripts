@@ -69,7 +69,7 @@
 
       function init(data) {
         DATA = data;
-        MODE_HINT.test = "Emails go only to " + data.testRecipient + ", built with a real individual's name & details.";
+        MODE_HINT.test = "Emails go only to the test recipient below, built with a real individual's name & details.";
         data.upcoming.concat(data.past).forEach(function(e) { EVENTS_BY_KEY[e.eventKey] = e; });
 
         var evOptions = '';
@@ -106,7 +106,9 @@
           '<div class="section"><label class="block">Event</label><select id="event">' + evOptions + '</select></div>' +
           '<div class="section"><label class="block">Email type</label>' + tplRadios + '</div>' +
           '<div class="section"><label class="block">Mode</label><div class="modes">' + modes + '</div>' +
-          '<div class="modehint" id="modehint"></div></div>' +
+          '<div class="modehint" id="modehint"></div>' +
+          '<div id="testRecipRow" style="margin-top:8px"><label class="block">Test recipient</label>' +
+          '<input type="text" id="testRecipient" value="' + esc(data.testRecipient || '') + '" placeholder="who receives the test email"></div></div>' +
           '<div class="section"><label class="block">Sent by</label>' +
           '<input type="text" id="sender" placeholder="Your name (e.g. Alex)" autocomplete="name">' +
           '<div class="modehint">Used in the email: “My name is …” and the “Warmly,” sign-off.</div></div>' +
@@ -114,6 +116,7 @@
 
         document.getElementById('event').addEventListener('change', refresh);
         document.getElementById('sender').addEventListener('input', refresh);
+        document.getElementById('testRecipient').addEventListener('input', refresh);
         Array.prototype.forEach.call(document.querySelectorAll('input[name=tpl], input[name=mode]'), function(el) {
           el.addEventListener('change', refresh);
         });
@@ -144,14 +147,19 @@
         });
         document.getElementById('modehint').textContent = MODE_HINT[mode] || '';
 
+        document.getElementById('testRecipRow').style.display = (mode === 'test') ? '' : 'none';
+        var testRecip = (document.getElementById('testRecipient').value || '').trim();
+        var testRecipOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(testRecip);
+
         var btn = document.getElementById('send');
         var n = ev ? (ev.counts[tpl] || 0) : 0;
         var name = (document.getElementById('sender').value || '').trim();
         btn.className = (mode === 'actual') ? 'danger' : '';
-        btn.disabled = !ev || n === 0 || !name;
+        btn.disabled = !ev || n === 0 || !name || (mode === 'test' && !testRecipOk);
         btn.textContent = !ev ? 'Send'
           : n === 0 ? 'No recipients for this combination'
           : !name ? 'Enter your name to send'
+          : (mode === 'test' && !testRecipOk) ? 'Enter a valid test recipient'
           : (mode === 'dry' ? 'Dry run for ' : mode === 'test' ? 'Send test built from ' : 'Send to ') +
             n + (n === 1 ? ' person' : ' people');
       }
@@ -161,7 +169,8 @@
           eventKey: document.getElementById('event').value,
           templateKey: selected('tpl'),
           mode: selected('mode'),
-          senderName: (document.getElementById('sender').value || '').trim()
+          senderName: (document.getElementById('sender').value || '').trim(),
+          testRecipient: (document.getElementById('testRecipient').value || '').trim()
         };
         var ev = EVENTS_BY_KEY[payload.eventKey];
         var n = ev ? (ev.counts[payload.templateKey] || 0) : 0;
@@ -185,6 +194,7 @@
             '&eventKey=' + encodeURIComponent(payload.eventKey) +
             '&mode=' + encodeURIComponent(payload.mode) +
             '&senderName=' + encodeURIComponent(payload.senderName) +
+            '&testRecipient=' + encodeURIComponent(payload.testRecipient) +
             '&expected=' + encodeURIComponent(n) +
             '&authuser=' + encodeURIComponent(DATA.sendAccount);
           window.open(url, '_blank');

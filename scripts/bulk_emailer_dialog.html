@@ -154,6 +154,8 @@
 
           '<fieldset><legend>Sending options</legend>' +
           '<label class="check"><input type="checkbox" id="skipSent" checked> Skip anyone already sent this subject (Email Tracking)</label>' +
+          '<label class="check"><input type="checkbox" id="personalize"> Personalize per recipient — one email each; <b>{{name}}</b> in the body becomes their first name</label>' +
+          '<div class="modehint" id="persHint"></div>' +
           '<label class="check"><input type="checkbox" id="batchSingle" checked> Batch into one email per ~45 recipients (instead of one email each)</label>' +
           '<div class="row2" style="margin-top:8px">' +
           '<div><label class="block">Recipient visibility</label><select id="batchMode">' +
@@ -175,7 +177,7 @@
         Array.prototype.forEach.call(document.querySelectorAll('input[name=aud], input[name=mode]'), function(el) {
           el.addEventListener('change', refresh);
         });
-        ['subject', 'body', 'testRecipients', 'batchSingle'].forEach(function(id) {
+        ['subject', 'body', 'testRecipients', 'batchSingle', 'personalize'].forEach(function(id) {
           $(id).addEventListener('input', refresh);
         });
         $('sendBtn').addEventListener('click', send);
@@ -197,6 +199,16 @@
 
         var subject = $('subject').value.trim();
         var body = $('body').value.trim();
+
+        // Personalize forces one-email-per-person, so the batch controls go idle.
+        var personalize = $('personalize').checked;
+        $('batchSingle').disabled = personalize;
+        $('batchMode').disabled = personalize;
+        $('batchSize').disabled = personalize;
+        $('persHint').textContent = !personalize ? ''
+          : (/\{\{\s*name\s*\}\}/i.test(body)
+            ? 'Each person gets their own email with their first name filled in.'
+            : 'Tip: add {{name}} in the body where the first name should go — e.g. "Hi {{name}},"');
         var aud = selected('aud');
         var n = (mode === 'test')
           ? $('testRecipients').value.split(/[,;\n]+/).filter(function(s) { return s.trim(); }).length
@@ -286,6 +298,7 @@
           attendedLessThan: $('lessThan').value === '' ? null : Number($('lessThan').value),
           excludeEmails: $('exclude').value,
           skipAlreadySent: $('skipSent').checked,
+          personalize: $('personalize').checked,
           batchSingle: $('batchSingle').checked,
           batchMode: $('batchMode').value,
           batchSize: Number($('batchSize').value) || 45,

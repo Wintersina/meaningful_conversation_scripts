@@ -84,6 +84,7 @@ function buildComposerSendPage_(p) {
     eventKey: String(p.eventKey || ""),
     mode: String(p.mode || ""),
     senderName: String(p.senderName || ""),
+    testRecipient: String(p.testRecipient || ""),
     expected: parseInt(p.expected, 10) || 0,
     progressToken: Utilities.getUuid(),
     account: Session.getActiveUser().getEmail() || "(unknown account)"
@@ -189,8 +190,9 @@ function getEmailComposerData() {
 
 /**
  * Sends from the dialog. payload = { templateKey, eventKey, mode, senderName,
- * progressToken }. senderName replaces both the "My name is …" intro and the
- * "Warmly, …" sign-off; progressToken enables live progress polling.
+ * testRecipient, progressToken }. senderName replaces both the "My name is …"
+ * intro and the "Warmly, …" sign-off; testRecipient overrides where test-mode
+ * emails go; progressToken enables live progress polling.
  * Returns a human-readable summary string shown in the dialog.
  */
 function sendComposerEmail(payload) {
@@ -205,6 +207,10 @@ function sendComposerEmail(payload) {
   if (senderName) {
     config.SENDER_NAME = senderName;
     config.SIGNOFF_NAME = senderName;
+  }
+  var testRecipient = payload.testRecipient ? String(payload.testRecipient).trim() : "";
+  if (testRecipient) {
+    config.TEST_RECIPIENT = testRecipient;
   }
   if (payload.progressToken) {
     config.PROGRESS_TOKEN = String(payload.progressToken);
