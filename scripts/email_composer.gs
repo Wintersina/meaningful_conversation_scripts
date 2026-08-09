@@ -8,9 +8,14 @@
  * browser's DEFAULT Google session and fail with PERMISSION_DENIED when other
  * accounts are signed in. So the popup's Send instead hops through the web-app
  * deployment: it opens COMPOSER_WEBAPP_URL?action=send&…&authuser=<team acct>
- * in a small tab, where doGet performs the send pinned to the team account and
- * shows the result. All picking still happens in the popup; data is injected
- * at render time so loading never round-trips either.
+ * in a small tab. doGet returns a lightweight "Sending…" page immediately;
+ * that page kicks off the send via google.script.run (session-safe in a full
+ * tab) and polls a CacheService progress snapshot so the user sees
+ * "Sending X of Y" instead of a blank spinner. All picking still happens in
+ * the popup; data is injected at render time so loading never round-trips.
+ *
+ * The person clicking Send types their name in the popup; it becomes both the
+ * "My name is …" intro and the "Warmly, …" sign-off for that send.
  *
  * Sending goes through runLifecycleEmailer_ with the picked event as an
  * explicit override, so MODE semantics and idempotency match the menu runs.
@@ -50,7 +55,7 @@ function showEmailComposerDialog() {
 function doGet(e) {
   var p = (e && e.parameter) || {};
   if (p.action === "send") {
-    return handleComposerSendRequest_(p);
+    return buildComposerSendPage_(p);
   }
   if (p.page === "facebook") {
     return buildFacebookCsvImportHtml_("webapp")
@@ -62,25 +67,35 @@ function doGet(e) {
     .addMetaTag("viewport", "width=device-width, initial-scale=1");
 }
 
-function handleComposerSendRequest_(p) {
-  var ok, message;
-  try {
-    message = sendComposerEmail({ templateKey: p.templateKey, eventKey: p.eventKey, mode: p.mode });
-    ok = true;
-  } catch (err) {
-    message = (err && err.message) ? err.message : String(err);
-    ok = false;
-  }
-  var sender = Session.getActiveUser().getEmail() || "(unknown account)";
-  var html =
-    '<div style="font-family:Roboto,Arial,sans-serif;font-size:14px;max-width:560px;margin:48px auto;padding:0 16px">' +
-    '<h2 style="color:' + (ok ? "#188038" : "#c5221f") + ';margin-bottom:8px">' +
-    (ok ? "✓ Email Composer — done" : "✗ Email Composer — failed") + "</h2>" +
-    "<p>" + escapeHtml_(message) + "</p>" +
-    '<p style="color:#5f6368;font-size:12px">Ran as ' + escapeHtml_(sender) +
-    ". Re-running is safe — already-sent recipients are skipped. You can close this tab.</p>" +
-    "</div>";
-  return HtmlService.createHtmlOutput(html).setTitle("Email Composer — result");
+/**
+ * The hop tab's "Sending…" page. Returned instantly by doGet so the tab never
+ * sits on a blank browser spinner; the page itself starts the send with
+ * google.script.run and polls getComposerSendProgress for live counts.
+ */
+function buildComposerSendPage_(p) {
+  var t = HtmlService.createTemplateFromFile("email_composer_send_page");
+  t.payloadJson = JSON.stringify({
+    templateKey: String(p.templateKey || ""),
+    eventKey: String(p.eventKey || ""),
+    mode: String(p.mode || ""),
+    senderName: String(p.senderName || ""),
+    expected: parseInt(p.expected, 10) || 0,
+    progressToken: Utilities.getUuid(),
+    account: Session.getActiveUser().getEmail() || "(unknown account)"
+  }).replace(/</g, "\\u003c");
+  return t.evaluate()
+    .setTitle("Email Composer — sending")
+    .addMetaTag("viewport", "width=device-width, initial-scale=1");
+}
+
+/**
+ * Polled by the sending page (and the webapp-mode composer) for live counts.
+ * Returns the snapshot written by lifecycleProgressUpdate_, or null.
+ */
+function getComposerSendProgress(token) {
+  if (!token) return null;
+  var raw = CacheService.getScriptCache().get("composerProgress:" + String(token));
+  return raw ? JSON.parse(raw) : null;
 }
 
 /**
@@ -168,7 +183,9 @@ function getEmailComposerData() {
 }
 
 /**
- * Sends from the dialog. payload = { templateKey, eventKey, mode }.
+ * Sends from the dialog. payload = { templateKey, eventKey, mode, senderName,
+ * progressToken }. senderName replaces both the "My name is …" intro and the
+ * "Warmly, …" sign-off; progressToken enables live progress polling.
  * Returns a human-readable summary string shown in the dialog.
  */
 function sendComposerEmail(payload) {
@@ -178,6 +195,15 @@ function sendComposerEmail(payload) {
 
   var config = lifecycleEmailerConfig_();
   config.MODE = payload.mode;
+
+  var senderName = payload.senderName ? String(payload.senderName).trim() : "";
+  if (senderName) {
+    config.SENDER_NAME = senderName;
+    config.SIGNOFF_NAME = senderName;
+  }
+  if (payload.progressToken) {
+    config.PROGRESS_TOKEN = String(payload.progressToken);
+  }
 
   var [contactSheet] = sheetsByName();
   var all = getAllEventColumns_(contactSheet, config);
@@ -196,5 +222,6 @@ function sendComposerEmail(payload) {
   if (totals.failed) parts.push(totals.failed + " failed");
 
   return tpl.label + ' → "' + picked[0].title + '" (' + picked[0].dateStr + "), mode " +
-    payload.mode + ": " + parts.join(", ") + ".";
+    payload.mode + ": " + parts.join(", ") + "." +
+    (senderName ? ' Signed as "' + senderName + '".' : "");
 }

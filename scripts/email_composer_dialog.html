@@ -7,7 +7,7 @@
       h3 { margin: 0 0 4px; font-size: 14px; }
       .hint { color: #5f6368; font-size: 11.5px; margin: 0 0 10px; }
       select, button { font: inherit; }
-      select { width: 100%; padding: 6px; border: 1px solid #dadce0; border-radius: 6px; background: #fff; }
+      select, input[type=text] { width: 100%; padding: 6px; border: 1px solid #dadce0; border-radius: 6px; background: #fff; box-sizing: border-box; }
       .section { margin-bottom: 14px; }
       label.block { display: block; font-weight: 500; margin-bottom: 4px; }
       .tpl { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid #dadce0; border-radius: 8px; margin-bottom: 6px; cursor: pointer; }
@@ -107,9 +107,13 @@
           '<div class="section"><label class="block">Email type</label>' + tplRadios + '</div>' +
           '<div class="section"><label class="block">Mode</label><div class="modes">' + modes + '</div>' +
           '<div class="modehint" id="modehint"></div></div>' +
+          '<div class="section"><label class="block">Sent by</label>' +
+          '<input type="text" id="sender" placeholder="Your name (e.g. Alex)" autocomplete="name">' +
+          '<div class="modehint">Used in the email: “My name is …” and the “Warmly,” sign-off.</div></div>' +
           '<button id="send">Send</button><div id="status"></div>';
 
         document.getElementById('event').addEventListener('change', refresh);
+        document.getElementById('sender').addEventListener('input', refresh);
         Array.prototype.forEach.call(document.querySelectorAll('input[name=tpl], input[name=mode]'), function(el) {
           el.addEventListener('change', refresh);
         });
@@ -142,24 +146,28 @@
 
         var btn = document.getElementById('send');
         var n = ev ? (ev.counts[tpl] || 0) : 0;
+        var name = (document.getElementById('sender').value || '').trim();
         btn.className = (mode === 'actual') ? 'danger' : '';
-        btn.disabled = !ev || n === 0;
+        btn.disabled = !ev || n === 0 || !name;
         btn.textContent = !ev ? 'Send'
-          : (n === 0 ? 'No recipients for this combination'
+          : n === 0 ? 'No recipients for this combination'
+          : !name ? 'Enter your name to send'
           : (mode === 'dry' ? 'Dry run for ' : mode === 'test' ? 'Send test built from ' : 'Send to ') +
-            n + (n === 1 ? ' person' : ' people'));
+            n + (n === 1 ? ' person' : ' people');
       }
 
       function send() {
         var payload = {
           eventKey: document.getElementById('event').value,
           templateKey: selected('tpl'),
-          mode: selected('mode')
+          mode: selected('mode'),
+          senderName: (document.getElementById('sender').value || '').trim()
         };
+        var ev = EVENTS_BY_KEY[payload.eventKey];
+        var n = ev ? (ev.counts[payload.templateKey] || 0) : 0;
         if (payload.mode === 'actual') {
-          var ev = EVENTS_BY_KEY[payload.eventKey];
-          var n = ev ? ev.counts[payload.templateKey] : 0;
-          if (!confirm('Send REAL emails to up to ' + n + ' people for "' + ev.title + '"?')) return;
+          if (!confirm('Send REAL emails to up to ' + n + ' people for "' + ev.title +
+            '", signed as "' + payload.senderName + '"?')) return;
         }
 
         var btn = document.getElementById('send');
@@ -176,23 +184,41 @@
             '&templateKey=' + encodeURIComponent(payload.templateKey) +
             '&eventKey=' + encodeURIComponent(payload.eventKey) +
             '&mode=' + encodeURIComponent(payload.mode) +
+            '&senderName=' + encodeURIComponent(payload.senderName) +
+            '&expected=' + encodeURIComponent(n) +
             '&authuser=' + encodeURIComponent(DATA.sendAccount);
           window.open(url, '_blank');
           status.className = 'ok';
           status.textContent = 'Sending in a new tab as ' + DATA.sendAccount +
-            ' — the result appears there. You can close that tab when done.';
+            ' — live progress and the result appear there. You can close that tab when done.';
           refresh();
           return;
         }
 
+        // Full-tab mode: call directly, and poll the same progress snapshot the
+        // hop page uses so the status line shows "Processing X of Y".
+        payload.progressToken = 'w' + Date.now() + Math.random().toString(36).slice(2);
         status.textContent = 'Working…';
+        var poll = setInterval(function() {
+          google.script.run
+            .withSuccessHandler(function(p) {
+              if (p && p.total) {
+                status.textContent = 'Processing ' + p.processed + ' of ' + p.total + '…';
+              }
+            })
+            .withFailureHandler(function() {}) // polling is best-effort
+            .getComposerSendProgress(payload.progressToken);
+        }, 1500);
+
         google.script.run
           .withSuccessHandler(function(msg) {
+            clearInterval(poll);
             status.className = 'ok';
             status.textContent = '✓ ' + msg;
             refresh();
           })
           .withFailureHandler(function(e) {
+            clearInterval(poll);
             status.className = 'err';
             status.textContent = '✗ ' + e.message;
             refresh();

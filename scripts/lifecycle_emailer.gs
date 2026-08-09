@@ -30,6 +30,8 @@ function lifecycleEmailerConfig_() {
   return {
     MODE: "test", // "dry" (log only) | "test" (send to TEST_RECIPIENT) | "actual"
 
+    // Defaults for menu/nightly runs. Email Composer sends override BOTH with
+    // the name typed into the popup's "Sent by" field.
     SENDER_NAME: "Sina", // used in the welcome intro ("My name is …")
     SIGNOFF_NAME: "The Meaningful Conversations Team", // used in sign-offs ("Warmly, …")
 
@@ -209,6 +211,7 @@ function runLifecycleEmailer_(templateKey, config, only, eventsOverride) {
 
   var alreadySent = buildLifecycleSentSet_(tracking);
   var totals = { sent: 0, skipped: 0, failed: 0, planned: 0 };
+  var progress = { total: 0, processed: 0 };
 
   events.forEach(function(ev) {
     var recipients = collectEventAudience_(contactSheet, ev.col0, tpl, config);
@@ -239,7 +242,10 @@ function runLifecycleEmailer_(templateKey, config, only, eventsOverride) {
     var subject = tpl.subject(ev, evCtx, config);
     var testSentForEvent = 0;
 
-    recipients.forEach(function(person) {
+    progress.total += recipients.length;
+    lifecycleProgressUpdate_(config, progress, totals, false);
+
+    var processRecipient = function(person) {
       var key = lifecycleKey_(templateKey, person.email, ev.eventKey);
       var forceResend = !!(only && only.FORCE_RESEND);
 
@@ -286,12 +292,43 @@ function runLifecycleEmailer_(templateKey, config, only, eventsOverride) {
         appendLifecycleTracking_(tracking, person.email, ev.eventKey, templateKey, "Failed", "Actual Run", person.firstName, res.error, subject, "");
         totals.failed++;
       }
+    };
+
+    recipients.forEach(function(person) {
+      processRecipient(person);
+      progress.processed++;
+      lifecycleProgressUpdate_(config, progress, totals, false);
     });
   });
 
+  lifecycleProgressUpdate_(config, progress, totals, true);
   Logger.log("[%s] Done. Mode=%s — sent: %s, skipped (already sent): %s, failed: %s, planned (dry): %s",
     tpl.label, config.MODE, totals.sent, totals.skipped, totals.failed, totals.planned);
   return totals;
+}
+
+/**
+ * Writes a live-progress snapshot for the Email Composer's sending page.
+ * No-ops unless config.PROGRESS_TOKEN is set (only composer sends set it).
+ * Best-effort: a cache hiccup must never break a send.
+ */
+function lifecycleProgressUpdate_(config, progress, totals, done) {
+  if (!config.PROGRESS_TOKEN) return;
+  try {
+    CacheService.getScriptCache().put(
+      "composerProgress:" + config.PROGRESS_TOKEN,
+      JSON.stringify({
+        total: progress.total,
+        processed: progress.processed,
+        sent: totals.sent,
+        skipped: totals.skipped,
+        failed: totals.failed,
+        planned: totals.planned,
+        done: !!done
+      }),
+      600
+    );
+  } catch (e) {}
 }
 
 /** ————————————————————————————————————————————————————————
