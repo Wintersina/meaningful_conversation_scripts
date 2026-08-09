@@ -62,6 +62,11 @@ function doGet(e) {
       .setTitle("Facebook CSV Import")
       .addMetaTag("viewport", "width=device-width, initial-scale=1");
   }
+  if (p.page === "bulkemailer") {
+    return buildBulkEmailerHtml_("webapp")
+      .setTitle("Bulk Emailer")
+      .addMetaTag("viewport", "width=device-width, initial-scale=1");
+  }
   return buildComposerHtml_("webapp")
     .setTitle("Email Composer")
     .addMetaTag("viewport", "width=device-width, initial-scale=1");

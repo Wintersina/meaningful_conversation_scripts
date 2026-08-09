@@ -1,173 +1,325 @@
-function sendEmails() {
-  // ——— CONFIG ————————————————————————————————————————————————————————
-  var CONFIG = {
-    MODE: "test", // "dry" | "test" | "actual"
-    SUBJECT: "A Common Endeavor St. Louis",
+/**
+ * Bulk Emailer — sends a typed subject + body (wrapped in a clean HTML
+ * template) to a chosen slice of the Contact List:
+ *
+ *   whole     — every data row (Row 13 down; section copies dedup by email)
+ *   attended  — the Attended section (rows 13 .. above the "RSVP 2+" marker)
+ *   rsvp      — the RSVP 2+ section (between "RSVP 2+" and "Stop RSVP")
+ *
+ * Section bounds mirror sortAttendedRows / sortRSVPRows exactly. The old
+ * "Start Email" / "Stop Email" column-A markers and the Google-Doc message
+ * source are gone: everything is configured in the Bulk Emailer UI.
+ *
+ * UI: Custom Actions → "Bulk Emailer…" opens a small launcher popup whose
+ * button opens the full web-app tab (?page=bulkemailer) pinned to the team
+ * account. In that tab google.script.run is session-safe, so the form loads
+ * data, uploads attachments from the browser, sends via sendBulkEmails, and
+ * polls the same CacheService progress snapshots the Email Composer uses.
+ *
+ * Idempotency: sends are logged to the "Email Tracking" sheet keyed by
+ * email + subject; "skip already sent" drops addresses that already got an
+ * email with the same subject.
+ */
 
-    // Message body source (Google Doc)
-    DOC_ID: EMAILER_KEYS.docId, // required
+var BULK_EMAILER_DEFAULTS = {
+  SUBJECT: "A Common Endeavor St. Louis",
+  TEST_RECIPIENTS: ["wintersina@gmail.com"],
+  TRACKING_SHEET_NAME: "Email Tracking",
 
-    // Optional file attachment (any Drive file: PDF, image, etc.)
-    ATTACH_FILE: true,
-    ATTACHMENT_ID: EMAILER_KEYS.attachmentId,
+  // Columns in Contact List (0-based)
+  COL_NAME: 0, // A: Full name
+  COL_EMAIL: 5, // F: Email
 
-    // Test recipients for "test" mode
-    TEST_RECIPIENTS: ["wintersina@gmail.com"], //"brainlift@gmail.com
+  REPEAT_FLAG_COL: 4, // E
+  REPEAT_FLAG_VALUE: "repeat attendee",
 
-    // Sheets
-    CONTACT_SHEET_NAME: "Contact List",
-    TRACKING_SHEET_NAME: "Email Tracking",
+  BATCH_RECIPIENT_MODE: "bcc", // "bcc" (hidden) | "to" (everyone visible)
+  BATCH_SIZE: 45 // clamped to the 50-recipients-per-message cap at send time
+};
 
-    // Columns in Contact List (0-based)
-    COL_NAME: 0, // A: Full name
-    COL_EMAIL: 5, // F: Email
+var BULK_AUDIENCES = { WHOLE: "whole", ATTENDED: "attended", RSVP: "rsvp" };
 
-    // If true, only send to rows where column E == "repeat attendee" (case-insensitive)
-    FILTER_REPEAT_ATTENDEES: false,
-    REPEAT_FLAG_COL: 4, // E
-    REPEAT_FLAG_VALUE: "repeat attendee",
+/**
+ * 0-based [start, end] row bounds (inclusive, into getDataRange().getValues())
+ * for an audience, delimited exactly the way the sort scripts do it:
+ *  - attended: sheet rows 13 .. the row above the "RSVP 2+" marker (col B)
+ *  - rsvp:     two rows below "RSVP 2+" .. two rows above "Stop RSVP" (col A)
+ *  - whole:    sheet rows 13 .. last row
+ */
+function bulkAudienceBounds_(data, audience) {
+  var firstData0 = 12; // sheet row 13, where sortAttendedRows starts
 
-    // If true, only send to people who have an RSVP/attendance value in the
-    // event column matching FILTER_EVENT_TITLE. Matches event title in Row 7
-    // (normalized, case-insensitive). Cells with "-", "--", or empty are skipped.
-    FILTER_BY_EVENT: false,
-    FILTER_EVENT_TITLE: "One God, Many Paths",  // e.g. "A Divine Connection to Nature"
-
-    // If true, filter by the "# Events Attended" column (header located in
-    // Row 5). Set either bound to null to disable it; set both for a range.
-    //  - ATTENDED_MORE_THAN: only include people who attended MORE THAN this many
-    //  - ATTENDED_LESS_THAN: only include people who attended LESS THAN this many
-    // e.g. MORE_THAN: 5, LESS_THAN: 10 → people with 6-9 attended meetings.
-    // Rows with a blank/non-numeric count are always skipped when this is on.
-    FILTER_BY_ATTENDED_COUNT: true,
-    ATTENDED_MORE_THAN: 5,
-    ATTENDED_LESS_THAN: null,
-
-    // Emails to never send to, regardless of any other filter (case-insensitive).
-    // Applies to the sheet-built list in "dry"/"actual" modes; TEST_RECIPIENTS
-    // in "test" mode are not filtered (they're explicitly chosen).
-    EXCLUDE_EMAILS: [
-        ],
-
-    // If true, skip emails that were already sent with the same SUBJECT in a previous run.
-    // Different subjects are treated as separate sends (idempotent per email+subject).
-    SKIP_ALREADY_SENT: true,
-
-    // If true, send batched emails addressed to many recipients at once instead
-    // of a separate email per recipient. By default recipients go in BCC so their
-    // addresses stay private from each other (set BATCH_RECIPIENT_MODE to "to" to
-    // make everyone visible to each other).
-    BATCH_SINGLE_EMAIL: true,
-    BATCH_RECIPIENT_MODE: "bcc", // "bcc" (hidden) | "to" (everyone visible)
-
-    // Max recipients per batched message. Apps Script caps total recipients
-    // (to + cc + bcc combined) at 50 per message for BOTH consumer and Workspace
-    // accounts; the separate daily quota is 100 recipients/day (consumer) or
-    // 1,500/day (Workspace). Batches larger than this are split into multiple
-    // messages, each with its own tracking row. This is clamped to the 50/msg
-    // hard cap below (BCC mode reserves 1 slot for the To address), so it can't
-    // be set too high. Lower it only if you still hit "Limit Exceeded".
-    BATCH_SIZE: 45
-  };
-  // Note: Requires COL_CONSTANTS.EMAIL_START and COL_CONSTANTS.STOP_EMAIL markers
-  // placed in the Name column (CONFIG.COL_NAME). Processing will start AFTER the
-  // EMAIL_START row and stop BEFORE the STOP_EMAIL row.
-  // ————————————————————————————————————————————————————————————————————
-
-  // 1) Setup sheets
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var contactSheet = ss.getSheetByName(CONFIG.CONTACT_SHEET_NAME);
-  if (!contactSheet) throw new Error('Missing sheet: "' + CONFIG.CONTACT_SHEET_NAME + '"');
-  var tracking = ensureTrackingSheet_(ss, CONFIG.TRACKING_SHEET_NAME);
-
-  // 2) Load message + optional attachment
-  var message = loadMessageFromDoc_(CONFIG.DOC_ID);
-  var attach = CONFIG.ATTACH_FILE ? loadOptionalAttachment_(CONFIG.ATTACHMENT_ID) : null; // {blob, name} or null
-
-  // 3) Build recipient map (email => firstName), honoring EMAIL_START/STOP_EMAIL markers
-  var recipients = (CONFIG.MODE === "test")
-    ? buildTestRecipients_(CONFIG.TEST_RECIPIENTS)
-    : buildUniqueRecipientsFromSheet_(
-        contactSheet,
-        CONFIG.COL_NAME,
-        CONFIG.COLL_EMAIL, // <-- typo prevention; corrected below
-        CONFIG.FILTER_REPEAT_ATTENDEES,
-        CONFIG.REPEAT_FLAG_COL,
-        CONFIG.REPEAT_FLAG_VALUE
-      );
-
-  // Fix minor typo: use COL_EMAIL
-  // (Leaving the above call intact but reassigning here keeps the minimal-change spirit.)
-  if (CONFIG.MODE !== "test") {
-    // Resolve event column index if filtering by event
-    var eventColIdx = -1;
-    if (CONFIG.FILTER_BY_EVENT && CONFIG.FILTER_EVENT_TITLE) {
-      eventColIdx = findEventColumnByTitle_(contactSheet, CONFIG.FILTER_EVENT_TITLE);
-      if (eventColIdx === -1) {
-        throw new Error('Event title not found in Row 7: "' + CONFIG.FILTER_EVENT_TITLE + '"');
-      }
-      Logger.log("Filtering by event: \"" + CONFIG.FILTER_EVENT_TITLE + "\" (column " + columnToLetter(eventColIdx + 1) + ")");
-    }
-
-    // Resolve "# Events Attended" column index if filtering by attendance count
-    var attendedColIdx = -1;
-    if (CONFIG.FILTER_BY_ATTENDED_COUNT) {
-      if (CONFIG.ATTENDED_MORE_THAN == null && CONFIG.ATTENDED_LESS_THAN == null) {
-        throw new Error("FILTER_BY_ATTENDED_COUNT is on but both ATTENDED_MORE_THAN and ATTENDED_LESS_THAN are null.");
-      }
-      attendedColIdx = findAttendedCountColumn_(contactSheet);
-      if (attendedColIdx === -1) {
-        throw new Error('Column "' + COL_CONSTANTS.EVENTS_ATTENDED + '" not found in Row 5.');
-      }
-      var boundsDesc = [];
-      if (CONFIG.ATTENDED_MORE_THAN != null) boundsDesc.push("more than " + CONFIG.ATTENDED_MORE_THAN);
-      if (CONFIG.ATTENDED_LESS_THAN != null) boundsDesc.push("less than " + CONFIG.ATTENDED_LESS_THAN);
-      Logger.log("Filtering by attendance: " + boundsDesc.join(" and ") +
-        " meetings (column " + columnToLetter(attendedColIdx + 1) + ")");
-    }
-
-    recipients = buildUniqueRecipientsFromSheet_(
-      contactSheet,
-      CONFIG.COL_NAME,
-      CONFIG.COL_EMAIL,
-      CONFIG.FILTER_REPEAT_ATTENDEES,
-      CONFIG.REPEAT_FLAG_COL,
-      CONFIG.REPEAT_FLAG_VALUE,
-      eventColIdx,
-      attendedColIdx,
-      CONFIG.ATTENDED_MORE_THAN,
-      CONFIG.ATTENDED_LESS_THAN,
-      CONFIG.EXCLUDE_EMAILS
-    );
+  if (audience === BULK_AUDIENCES.WHOLE) {
+    return { start: firstData0, end: data.length - 1 };
   }
 
-  // 4) Determine previously sent emails for this subject (optionally skip)
-  var alreadySent = CONFIG.SKIP_ALREADY_SENT ? buildSentSet_(tracking, CONFIG.SUBJECT) : new Set();
-
-  // 5) Dispatch per-mode
-  // Test mode never skips already-sent (it's meant for repeated verification).
-  var skipSet = (CONFIG.MODE === "test") ? new Set() : alreadySent;
-
-  if (!["dry", "test", "actual"].includes(CONFIG.MODE)) {
-    throw new Error('Unknown MODE "' + CONFIG.MODE + '" (use "dry" | "test" | "actual")');
+  var rsvpIdx0 = -1;
+  var stopIdx0 = -1;
+  for (var i = 0; i < data.length; i++) {
+    if (rsvpIdx0 === -1 && String(data[i][1] || "").trim() === COL_CONSTANTS.RSVP_2_PLUS) rsvpIdx0 = i;
+    if (stopIdx0 === -1 && String(data[i][0] || "").trim() === COL_CONSTANTS.STOP_RSVP) stopIdx0 = i;
   }
 
-  if (CONFIG.BATCH_SINGLE_EMAIL) {
-    // Batched sends (BCC/To per BATCH_RECIPIENT_MODE), split into BATCH_SIZE chunks.
-    batchFlow_(recipients, tracking, message, attach, CONFIG.SUBJECT, skipSet, CONFIG.MODE, CONFIG.BATCH_RECIPIENT_MODE, CONFIG.BATCH_SIZE);
-  } else if (CONFIG.MODE === "dry") {
-    dryRunFlow_(recipients, tracking, message, attach, CONFIG.SUBJECT, alreadySent);
-  } else if (CONFIG.MODE === "test") {
-    testRunFlow_(recipients, tracking, message, attach, CONFIG.SUBJECT);
-  } else if (CONFIG.MODE === "actual") {
-    actualRunFlow_(recipients, tracking, message, attach, CONFIG.SUBJECT, alreadySent);
+  if (audience === BULK_AUDIENCES.ATTENDED) {
+    if (rsvpIdx0 === -1) throw new Error('"' + COL_CONSTANTS.RSVP_2_PLUS + '" marker not found in column B — cannot bound the Attended section.');
+    return { start: firstData0, end: rsvpIdx0 - 1 };
   }
 
-  Logger.log("Emails processed. Mode=" + CONFIG.MODE + ", attach_file=" + !!attach);
+  if (audience === BULK_AUDIENCES.RSVP) {
+    if (rsvpIdx0 === -1) throw new Error('"' + COL_CONSTANTS.RSVP_2_PLUS + '" marker not found in column B — cannot bound the RSVP section.');
+    if (stopIdx0 === -1) throw new Error('"' + COL_CONSTANTS.STOP_RSVP + '" marker not found in column A — cannot bound the RSVP section.');
+    return { start: rsvpIdx0 + 2, end: stopIdx0 - 2 };
+  }
+
+  throw new Error('Unknown audience "' + audience + '" (use whole | attended | rsvp)');
+}
+
+/**
+ * Wraps the typed plain-text body in a clean, email-client-safe HTML card.
+ * Text is escaped so whatever is typed can't break the markup; blank lines
+ * become paragraph breaks, single newlines become line breaks.
+ */
+function buildBulkEmailHtml_(bodyText) {
+  var paragraphs = String(bodyText || "").trim().split(/\n{2,}/).map(function(p) {
+    return '<p style="margin:0 0 16px;">' + escapeHtml_(p).replace(/\n/g, "<br>") + "</p>";
+  }).join("");
+
+  return (
+    '<div style="margin:0;padding:24px 12px;background-color:#f5f4f0;">' +
+      '<div style="max-width:600px;margin:0 auto;background-color:#ffffff;border-radius:8px;' +
+        "padding:36px 40px;font-family:Georgia,'Times New Roman',serif;font-size:16px;" +
+        'line-height:1.65;color:#2b2b2b;">' +
+        paragraphs +
+      "</div>" +
+      '<div style="max-width:600px;margin:12px auto 0;text-align:center;' +
+        'font-family:Georgia,serif;font-size:12px;color:#8a8a86;">Meaningful Conversations · St. Louis, MO</div>' +
+    "</div>"
+  );
 }
 
 /** ————————————————————————————————————————————————————————
- * Helpers: sheets, loading, recipients, tracking
+ * Bulk Emailer UI (launcher popup + web-app tab)
+ * ———————————————————————————————————————————————————————— */
+
+/**
+ * uiMode: "dialog" (in-sheet popup — just a launcher button, because iframe
+ * google.script.run binds to the browser's default session) or "webapp"
+ * (full tab pinned to the team account — the real form).
+ */
+function buildBulkEmailerHtml_(uiMode) {
+  var t = HtmlService.createTemplateFromFile("bulk_emailer_dialog");
+  var data = getBulkEmailerData();
+  data.webappUrl = COMPOSER_WEBAPP_URL;
+  data.sendAccount = COMPOSER_SEND_ACCOUNT;
+  t.bootData = JSON.stringify(data).replace(/</g, "\\u003c");
+  t.uiMode = uiMode;
+  return t.evaluate();
+}
+
+function showBulkEmailerDialog() {
+  var html = buildBulkEmailerHtml_("dialog").setWidth(420).setHeight(300);
+  SpreadsheetApp.getUi().showModalDialog(html, "Bulk Emailer");
+}
+
+/**
+ * Boot data for the form: per-audience unique-email counts, event titles for
+ * the optional event filter, and editable defaults.
+ */
+function getBulkEmailerData() {
+  var [contactSheet] = sheetsByName();
+  var data = contactSheet.getDataRange().getValues();
+  var emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  var counts = {};
+  [BULK_AUDIENCES.WHOLE, BULK_AUDIENCES.ATTENDED, BULK_AUDIENCES.RSVP].forEach(function(aud) {
+    try {
+      var b = bulkAudienceBounds_(data, aud);
+      var set = new Set();
+      for (var r = b.start; r <= b.end && r < data.length; r++) {
+        String(data[r][BULK_EMAILER_DEFAULTS.COL_EMAIL] || "").split(/[,;]+/).forEach(function(e) {
+          var em = e.trim();
+          if (emailRegex.test(em)) set.add(em.toLowerCase());
+        });
+      }
+      counts[aud] = set.size;
+    } catch (e) {
+      counts[aud] = null; // markers missing — the UI shows the section as unavailable
+    }
+  });
+
+  var events = getAllEventColumns_(contactSheet, lifecycleEmailerConfig_())
+    .map(function(e) { return { title: e.title, dateStr: e.dateStr }; });
+  events.reverse(); // newest first
+
+  return {
+    counts: counts,
+    events: events,
+    defaults: {
+      subject: BULK_EMAILER_DEFAULTS.SUBJECT,
+      testRecipients: BULK_EMAILER_DEFAULTS.TEST_RECIPIENTS.join(", "),
+      batchSize: BULK_EMAILER_DEFAULTS.BATCH_SIZE,
+      batchMode: BULK_EMAILER_DEFAULTS.BATCH_RECIPIENT_MODE,
+      repeatFlagValue: BULK_EMAILER_DEFAULTS.REPEAT_FLAG_VALUE
+    }
+  };
+}
+
+/**
+ * Sends from the Bulk Emailer form. payload:
+ *   {
+ *     mode: "dry"|"test"|"actual", audience: "whole"|"attended"|"rsvp",
+ *     subject, bodyText, testRecipients: "a@x, b@y",
+ *     attachment: { name, mimeType, dataB64 } | null,
+ *     filterRepeat: bool, eventTitle: "" | title,
+ *     attendedMoreThan: number|null, attendedLessThan: number|null,
+ *     excludeEmails: "a@x, b@y", skipAlreadySent: bool,
+ *     batchSingle: bool, batchMode: "bcc"|"to", batchSize: number,
+ *     progressToken: string (optional, enables live progress polling)
+ *   }
+ * Returns a human-readable summary string shown in the form.
+ */
+function sendBulkEmails(payload) {
+  if (!payload) throw new Error("Missing payload.");
+  if (!["dry", "test", "actual"].includes(payload.mode)) {
+    throw new Error('Unknown MODE "' + payload.mode + '" (use "dry" | "test" | "actual")');
+  }
+  var subject = String(payload.subject || "").trim();
+  var bodyText = String(payload.bodyText || "").trim();
+  if (!subject) throw new Error("Subject is required.");
+  if (!bodyText) throw new Error("Body is required.");
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var [contactSheet] = sheetsByName();
+  var tracking = ensureTrackingSheet_(ss, BULK_EMAILER_DEFAULTS.TRACKING_SHEET_NAME);
+
+  var message = { text: bodyText, html: buildBulkEmailHtml_(bodyText) };
+
+  var attach = null;
+  if (payload.attachment && payload.attachment.dataB64) {
+    attach = {
+      blob: Utilities.newBlob(
+        Utilities.base64Decode(payload.attachment.dataB64),
+        payload.attachment.mimeType || "application/octet-stream",
+        payload.attachment.name || "attachment"
+      ),
+      name: payload.attachment.name || "attachment"
+    };
+  }
+
+  // Build recipients
+  var recipients;
+  var audienceLabel;
+  if (payload.mode === "test") {
+    var testList = String(payload.testRecipients || "").split(/[,;\n]+/).map(function(s) { return s.trim(); }).filter(Boolean);
+    if (testList.length === 0) throw new Error("Test mode needs at least one test recipient.");
+    recipients = buildTestRecipients_(testList);
+    audienceLabel = "test recipients";
+  } else {
+    var audience = payload.audience || BULK_AUDIENCES.WHOLE;
+    audienceLabel = audience === BULK_AUDIENCES.WHOLE ? "whole list"
+      : audience === BULK_AUDIENCES.ATTENDED ? "Attended section" : "RSVP 2+ section";
+
+    var eventColIdx = -1;
+    if (payload.eventTitle) {
+      eventColIdx = findEventColumnByTitle_(contactSheet, payload.eventTitle);
+      if (eventColIdx === -1) throw new Error('Event title not found in Row 7: "' + payload.eventTitle + '"');
+    }
+
+    var moreThan = (payload.attendedMoreThan == null || payload.attendedMoreThan === "") ? null : Number(payload.attendedMoreThan);
+    var lessThan = (payload.attendedLessThan == null || payload.attendedLessThan === "") ? null : Number(payload.attendedLessThan);
+    var attendedColIdx = -1;
+    if (moreThan != null || lessThan != null) {
+      attendedColIdx = findAttendedCountColumn_(contactSheet);
+      if (attendedColIdx === -1) throw new Error('Column "' + COL_CONSTANTS.EVENTS_ATTENDED + '" not found in Row 5.');
+    }
+
+    var excludeEmails = String(payload.excludeEmails || "").split(/[,;\n]+/).map(function(s) { return s.trim(); }).filter(Boolean);
+
+    recipients = buildUniqueRecipientsFromSheet_(contactSheet, {
+      audience: audience,
+      filterRepeat: !!payload.filterRepeat,
+      eventColIdx: eventColIdx,
+      attendedColIdx: attendedColIdx,
+      attendedMoreThan: moreThan,
+      attendedLessThan: lessThan,
+      excludeEmails: excludeEmails
+    });
+  }
+
+  var alreadySent = payload.skipAlreadySent ? buildSentSet_(tracking, subject) : new Set();
+  // Test mode never skips already-sent (it's meant for repeated verification).
+  var skipSet = (payload.mode === "test") ? new Set() : alreadySent;
+
+  bulkProgressStart_(payload.progressToken, recipients.size);
+
+  var totals;
+  if (payload.batchSingle !== false) {
+    totals = batchFlow_(recipients, tracking, message, attach, subject, skipSet, payload.mode,
+      payload.batchMode || BULK_EMAILER_DEFAULTS.BATCH_RECIPIENT_MODE,
+      Number(payload.batchSize) || BULK_EMAILER_DEFAULTS.BATCH_SIZE);
+  } else if (payload.mode === "dry") {
+    totals = dryRunFlow_(recipients, tracking, message, attach, subject, skipSet);
+  } else if (payload.mode === "test") {
+    totals = testRunFlow_(recipients, tracking, message, attach, subject);
+  } else {
+    totals = actualRunFlow_(recipients, tracking, message, attach, subject, skipSet);
+  }
+
+  bulkProgressFlush_(true);
+
+  var parts = [];
+  if (payload.mode === "dry") parts.push(totals.planned + " would be sent");
+  else parts.push(totals.sent + " sent");
+  if (totals.skipped) parts.push(totals.skipped + " skipped (already sent)");
+  if (totals.failed) parts.push(totals.failed + " failed");
+  if (totals.messages != null && payload.mode !== "dry") parts.push(totals.messages + " message(s)");
+
+  return 'Bulk email "' + subject + '" → ' + audienceLabel + ", mode " + payload.mode + ": " +
+    parts.join(", ") + "." + (attach ? ' Attachment: "' + attach.name + '".' : "");
+}
+
+/** ————————————————————————————————————————————————————————
+ * Live-progress snapshots (same cache keys the Email Composer polls
+ * via getComposerSendProgress)
+ * ———————————————————————————————————————————————————————— */
+var bulkProgress_ = null;
+
+function bulkProgressStart_(token, total) {
+  if (!token) { bulkProgress_ = null; return; }
+  bulkProgress_ = { token: token, total: total, processed: 0, sent: 0, skipped: 0, failed: 0, planned: 0 };
+  bulkProgressFlush_(false);
+}
+
+/** outcome: "sent" | "skipped" | "failed" | "planned"; count defaults to 1. */
+function bulkProgressStep_(outcome, count) {
+  if (!bulkProgress_) return;
+  var n = (count == null) ? 1 : count;
+  bulkProgress_.processed += n;
+  if (outcome && bulkProgress_[outcome] != null) bulkProgress_[outcome] += n;
+  bulkProgressFlush_(false);
+}
+
+function bulkProgressFlush_(done) {
+  if (!bulkProgress_) return;
+  try {
+    CacheService.getScriptCache().put(
+      "composerProgress:" + bulkProgress_.token,
+      JSON.stringify({
+        total: bulkProgress_.total,
+        processed: bulkProgress_.processed,
+        sent: bulkProgress_.sent,
+        skipped: bulkProgress_.skipped,
+        failed: bulkProgress_.failed,
+        planned: bulkProgress_.planned,
+        done: !!done
+      }),
+      600
+    );
+  } catch (e) {} // progress is best-effort — never break a send over it
+}
+
+/** ————————————————————————————————————————————————————————
+ * Helpers: sheets, recipients, tracking
  * ———————————————————————————————————————————————————————— */
 function ensureTrackingSheet_(ss, name) {
   var sh = ss.getSheetByName(name);
@@ -192,41 +344,8 @@ function ensureTrackingSheet_(ss, name) {
 }
 
 /**
- * Loads the message body from a Google Doc as BOTH plain text and HTML.
- * - text: doc.getBody().getText() — used as the plain-text fallback part.
- * - html: the doc exported as HTML — preserves paragraph spacing, bold, links, etc.
- *   getText() alone drops the doc's paragraph spacing, which is why earlier emails
- *   arrived with every line jammed together and no gaps between paragraphs.
- */
-function loadMessageFromDoc_(docId) {
-  try {
-    var doc = DocumentApp.openById(docId);
-    return { text: doc.getBody().getText(), html: exportDocAsHtml_(docId) };
-  } catch (e) {
-    throw new Error("Cannot access the message doc: " + e);
-  }
-}
-
-/**
- * Exports a Google Doc's contents as HTML via the Docs export endpoint,
- * authenticated with the script's OAuth token. Returns the HTML string.
- */
-function exportDocAsHtml_(docId) {
-  var url = "https://docs.google.com/feeds/download/documents/export/Export?id=" +
-            encodeURIComponent(docId) + "&exportFormat=html";
-  var resp = UrlFetchApp.fetch(url, {
-    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
-    muteHttpExceptions: true
-  });
-  if (resp.getResponseCode() !== 200) {
-    throw new Error("Doc HTML export failed (HTTP " + resp.getResponseCode() + ")");
-  }
-  return resp.getContentText();
-}
-
-/**
  * Normalizes an email body into { text, html }. Accepts either a plain string
- * (html omitted) or an object from loadMessageFromDoc_. Keeps send helpers robust
+ * (html omitted) or a { text, html } object. Keeps send helpers robust
  * regardless of which form the caller passes.
  */
 function asEmailContent_(content) {
@@ -234,17 +353,6 @@ function asEmailContent_(content) {
     return { text: content.text || "", html: content.html || null };
   }
   return { text: String(content || ""), html: null };
-}
-
-function loadOptionalAttachment_(fileId) {
-  if (!fileId) return null;
-  try {
-    var file = DriveApp.getFileById(fileId);
-    return { blob: file.getBlob(), name: file.getName() };
-  } catch (e) {
-    // If ATTACH_FILE=true but file fetch fails, we fail fast so it isn't silent
-    throw new Error("Cannot access the attachment file: " + e);
-  }
 }
 
 function buildTestRecipients_(emails) {
@@ -291,106 +399,64 @@ function findAttendedCountColumn_(sheet) {
 }
 
 /**
- * Build recipients honoring two markers in the Name column:
- *  - COL_CONSTANTS.EMAIL_START: start sending AFTER this row
- *  - COL_CONSTANTS.STOP_EMAIL : stop sending BEFORE this row
- *
- * If EMAIL_START appears after STOP_EMAIL, abort the run.
- *
- * Optional filters:
- *  - If filterRepeat is true, only include rows where data[r][repeatColIdx] equals repeatValue
- *    (case-insensitive, trimmed).
- *  - If eventColIdx >= 0, only include rows that have a non-empty, non-dash value
- *    in that column (people who registered/attended for that event).
- *  - If attendedColIdx >= 0, only include rows whose "# Events Attended" count
- *    is strictly greater than attendedMoreThan (if non-null) AND strictly less
- *    than attendedLessThan (if non-null). Blank/non-numeric counts are skipped.
- *  - excludeEmails: addresses to always drop from the list (case-insensitive).
+ * Builds a unique email → firstName map for an audience slice of the
+ * Contact List. opts:
+ *   audience         — "whole" | "attended" | "rsvp" (see bulkAudienceBounds_)
+ *   filterRepeat     — only rows where col E == "repeat attendee"
+ *   eventColIdx      — >= 0: only rows with a non-empty, non-dash value there
+ *   attendedColIdx   — >= 0: apply the attended-count bounds below
+ *   attendedMoreThan — strictly-greater bound (null = off)
+ *   attendedLessThan — strictly-less bound (null = off)
+ *   excludeEmails    — addresses to always drop (case-insensitive)
  */
-function buildUniqueRecipientsFromSheet_(sheet, nameColIdx, emailColIdx, filterRepeat, repeatColIdx, repeatValue, eventColIdx, attendedColIdx, attendedMoreThan, attendedLessThan, excludeEmails) {
+function buildUniqueRecipientsFromSheet_(sheet, opts) {
   var data = sheet.getDataRange().getValues();
   var emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-  // Find marker rows (0-based indices into `data`)
-  var startMarkerRow = -1;
-  var stopMarkerRow  = -1;
-
-  for (var i = 1; i < data.length; i++) { // skip header row
-    var nameCell = (data[i][nameColIdx] || "").toString().trim();
-    if (startMarkerRow === -1 && nameCell === COL_CONSTANTS.EMAIL_START) {
-      startMarkerRow = i;
-    }
-    if (stopMarkerRow === -1 && nameCell === COL_CONSTANTS.STOP_EMAIL) {
-      stopMarkerRow = i;
-    }
-    // Keep scanning to catch both markers even if one appears first
-  }
-
-  // Determine inclusive working bounds in terms of real data rows
-  // Start AFTER the EMAIL_START row; End BEFORE the STOP_EMAIL row
-  var startIdx = (startMarkerRow !== -1) ? startMarkerRow + 1 : 1;                 // default row 2
-  var endIdx   = (stopMarkerRow  !== -1) ? stopMarkerRow  - 1 : (data.length - 1); // default last row
-
-  // Validate order: start must come before end
-  if (startMarkerRow !== -1 && stopMarkerRow !== -1 && startMarkerRow >= stopMarkerRow) {
-    throw new Error("EMAIL_START appears after or on the same row as STOP_EMAIL. Start must come before end. Aborting run.");
-  }
-
-  // If range is empty or inverted (e.g., markers adjacent), abort
+  var bounds = bulkAudienceBounds_(data, opts.audience || BULK_AUDIENCES.WHOLE);
+  var startIdx = bounds.start;
+  var endIdx = Math.min(bounds.end, data.length - 1);
   if (endIdx < startIdx) {
-    throw new Error("Computed email range is empty or invalid (start row > end row). Aborting run.");
+    throw new Error("Computed audience range is empty or invalid (start row > end row). Aborting run.");
   }
+  Logger.log("Audience '%s': rows %s to %s (inclusive).", opts.audience, startIdx + 1, endIdx + 1);
 
-  // Log the chosen range in 1-based sheet coordinates for clarity
-  Logger.log("Email range: rows %s to %s (inclusive).", (startIdx + 1), (endIdx + 1));
+  var repeatTarget = BULK_EMAILER_DEFAULTS.REPEAT_FLAG_VALUE.toLowerCase();
+  var shouldFilterEvent = (opts.eventColIdx != null && opts.eventColIdx >= 0);
+  var shouldFilterAttended = (opts.attendedColIdx != null && opts.attendedColIdx >= 0);
+  var attendedMin = (opts.attendedMoreThan != null) ? Number(opts.attendedMoreThan) : null;
+  var attendedMax = (opts.attendedLessThan != null) ? Number(opts.attendedLessThan) : null;
 
-  // Prepare filter comparator (only if enabled)
-  var shouldFilter = !!filterRepeat;
-  var repeatTarget = (repeatValue || "").toString().trim().toLowerCase();
-
-  // Event column filter
-  var shouldFilterEvent = (eventColIdx !== undefined && eventColIdx >= 0);
-
-  // Attendance count filter (either bound may be null/undefined = disabled)
-  var shouldFilterAttended = (attendedColIdx !== undefined && attendedColIdx >= 0);
-  var attendedMin = (attendedMoreThan != null) ? Number(attendedMoreThan) : null;
-  var attendedMax = (attendedLessThan != null) ? Number(attendedLessThan) : null;
-
-  // Exclude list: normalized (trimmed, lowercase) set of addresses to always drop
   var excludeSet = new Set();
-  (excludeEmails || []).forEach(function(e) {
+  (opts.excludeEmails || []).forEach(function(e) {
     var norm = (e || "").toString().trim().toLowerCase();
     if (norm) excludeSet.add(norm);
   });
   var excludedCount = 0;
 
-  // Collect unique recipients within [startIdx, endIdx]
   var map = new Map();
   for (var r = startIdx; r <= endIdx; r++) {
     var row = data[r];
 
-    // Optional repeat-attendee filter
-    if (shouldFilter) {
-      var cellVal = (row[repeatColIdx] || "").toString().trim().toLowerCase();
+    if (opts.filterRepeat) {
+      var cellVal = (row[BULK_EMAILER_DEFAULTS.REPEAT_FLAG_COL] || "").toString().trim().toLowerCase();
       if (cellVal !== repeatTarget) continue;
     }
 
-    // Optional event column filter: skip rows with no RSVP/attendance for this event
     if (shouldFilterEvent) {
-      var eventVal = (row[eventColIdx] || "").toString().trim();
+      var eventVal = (row[opts.eventColIdx] || "").toString().trim();
       if (!eventVal || eventVal === "-" || eventVal === "--") continue;
     }
 
-    // Optional attendance count filter: keep only counts inside the (min, max) bounds
     if (shouldFilterAttended) {
-      var attendedCount = Number(row[attendedColIdx]);
+      var attendedCount = Number(row[opts.attendedColIdx]);
       if (!isFinite(attendedCount)) continue;
       if (attendedMin !== null && attendedCount <= attendedMin) continue;
       if (attendedMax !== null && attendedCount >= attendedMax) continue;
     }
 
-    var nameCell = (row[nameColIdx] || "").toString().trim();
-    var email = (row[emailColIdx] || "").toString().trim();
+    var nameCell = (row[BULK_EMAILER_DEFAULTS.COL_NAME] || "").toString().trim();
+    var email = (row[BULK_EMAILER_DEFAULTS.COL_EMAIL] || "").toString().trim();
 
     // Handle multi-email cells (comma-separated) — add each valid email
     var emails = email.split(/[,;]+/);
@@ -409,16 +475,14 @@ function buildUniqueRecipientsFromSheet_(sheet, nameColIdx, emailColIdx, filterR
   if (shouldFilterEvent) {
     Logger.log("Event filter: " + map.size + " recipients with RSVP/attendance in event column");
   }
-
   if (shouldFilterAttended) {
-    var bounds = [];
-    if (attendedMin !== null) bounds.push("more than " + attendedMin);
-    if (attendedMax !== null) bounds.push("less than " + attendedMax);
-    Logger.log("Attendance filter: " + map.size + " recipients with " + bounds.join(" and ") + " meetings attended");
+    var boundsDesc = [];
+    if (attendedMin !== null) boundsDesc.push("more than " + attendedMin);
+    if (attendedMax !== null) boundsDesc.push("less than " + attendedMax);
+    Logger.log("Attendance filter: " + map.size + " recipients with " + boundsDesc.join(" and ") + " meetings attended");
   }
-
   if (excludeSet.size > 0) {
-    Logger.log("Exclude list: dropped " + excludedCount + " address(es) matching EXCLUDE_EMAILS");
+    Logger.log("Exclude list: dropped " + excludedCount + " address(es) matching the exclude list");
   }
 
   return map;
@@ -431,7 +495,7 @@ function buildUniqueRecipientsFromSheet_(sheet, nameColIdx, emailColIdx, filterR
  *
  * The Email cell may hold a single address (per-recipient rows) or many addresses
  * stacked newline/comma-separated (batch rows), so each cell is split and every
- * address is registered — keeping SKIP_ALREADY_SENT correct in both modes.
+ * address is registered — keeping skip-already-sent correct in both modes.
  */
 function buildSentSet_(trackingSheet, subject) {
   var vals = trackingSheet.getDataRange().getValues();
@@ -536,14 +600,18 @@ function safeSendBatchEmail_(emails, subject, body, attachObj, recipientMode) {
  * actually send). Because each send is one un-personalized email, it writes a
  * SINGLE tracking row per chunk: the Email column holds that chunk's addresses
  * stacked newline-separated, and the Name column holds the count. buildSentSet_
- * splits that cell back out, so SKIP_ALREADY_SENT still works per-email.
+ * splits that cell back out, so skip-already-sent still works per-email.
+ *
+ * Returns { sent, skipped, failed, planned, messages }.
  */
 function batchFlow_(recipients, tracking, message, attachObj, subject, alreadySent, mode, recipientMode, batchSize) {
+  var totals = { sent: 0, skipped: 0, failed: 0, planned: 0, messages: 0 };
   var emails = [];
   recipients.forEach(function(firstName, email) {
-    if (alreadySent && alreadySent.has(email)) return;
+    if (alreadySent && alreadySent.has(email)) { totals.skipped++; return; }
     emails.push(email);
   });
+  if (totals.skipped) bulkProgressStep_("skipped", totals.skipped);
 
   var attachLabel = attachObj ? attachObj.name : "None";
   var runType = (mode === "dry") ? "Dry Run" : (mode === "test" ? "Test Run" : "Actual Run");
@@ -551,7 +619,7 @@ function batchFlow_(recipients, tracking, message, attachObj, subject, alreadySe
 
   if (emails.length === 0) {
     Logger.log("Batch %s: no recipients to send (all filtered or already sent).", mode);
-    return;
+    return totals;
   }
 
   // Apps Script hard cap: 50 recipients (to + cc + bcc combined) per message.
@@ -568,6 +636,7 @@ function batchFlow_(recipients, tracking, message, attachObj, subject, alreadySe
   for (var i = 0; i < emails.length; i += chunkSize) {
     chunks.push(emails.slice(i, i + chunkSize));
   }
+  totals.messages = chunks.length;
 
   Logger.log("Batch %s: %s recipient(s) split into %s message(s) of up to %s via %s (cap %s/msg).",
     mode, emails.length, chunks.length, chunkSize, via, MAX_RECIPIENTS_PER_MESSAGE);
@@ -581,6 +650,8 @@ function batchFlow_(recipients, tracking, message, attachObj, subject, alreadySe
       Logger.log("Dry run (batch %s/%s): Would send ONE email to %s recipient(s) via %s. Attachment: %s",
         (idx + 1), chunks.length, chunk.length, via, attachLabel);
       appendTracking_(tracking, emailCell, "Pending", runType, countLabel, "", attachLabel, subject);
+      totals.planned += chunk.length;
+      bulkProgressStep_("planned", chunk.length);
       return;
     }
 
@@ -589,64 +660,85 @@ function batchFlow_(recipients, tracking, message, attachObj, subject, alreadySe
     if (res.ok) {
       Logger.log("Batch %s (%s/%s): sent ONE email to %s recipient(s) via %s. Attachment: %s",
         mode, (idx + 1), chunks.length, chunk.length, via, attachLabel);
+      totals.sent += chunk.length;
+      bulkProgressStep_("sent", chunk.length);
     } else {
       Logger.log("Batch %s (%s/%s): failed to send. Error: %s", mode, (idx + 1), chunks.length, res.error);
+      totals.failed += chunk.length;
+      bulkProgressStep_("failed", chunk.length);
     }
     appendTracking_(tracking, emailCell, res.ok ? "Sent" : "Failed", runType, countLabel,
       res.ok ? "" : res.error, attachLabel, subject);
   });
+
+  return totals;
 }
 
 /** ————————————————————————————————————————————————————————
- * Test, dryrun and Actual flows
+ * Per-recipient flows (one personalized tracking row per address)
+ * Each returns { sent, skipped, failed, planned }.
  * ———————————————————————————————————————————————————————— */
 function dryRunFlow_(recipients, tracking, message, attachObj, subject, alreadySent) {
+  var totals = { sent: 0, skipped: 0, failed: 0, planned: 0 };
   recipients.forEach(function(firstName, email) {
-    if (alreadySent.has(email)) return; // mirror actual behavior
-    var body = message;
+    if (alreadySent.has(email)) { totals.skipped++; bulkProgressStep_("skipped"); return; }
     Logger.log("Dry run: Would send to %s (%s) attachment: %s", firstName, email, attachObj ? attachObj.name : "None");
     appendTracking_(tracking, email, "Pending", "Dry Run", firstName, "", attachObj ? attachObj.name : "None", subject);
+    totals.planned++;
+    bulkProgressStep_("planned");
   });
+  return totals;
 }
 
 function testRunFlow_(recipients, tracking, message, attachObj, subject) {
+  var totals = { sent: 0, skipped: 0, failed: 0, planned: 0 };
   recipients.forEach(function(firstName, email) {
-    var body = message;
-    var res = safeSendEmail_(email, subject, body, attachObj);
+    var res = safeSendEmail_(email, subject, message, attachObj);
     if (res.ok) {
       Logger.log("Test email sent to: %s (%s) with attachment: %s", firstName, email, attachObj ? attachObj.name : "None");
       appendTracking_(tracking, email, "Sent", "Test Run", firstName, "", attachObj ? attachObj.name : "None", subject);
+      totals.sent++;
+      bulkProgressStep_("sent");
     } else {
       Logger.log("Failed test send to: %s. Error: %s", email, res.error);
       appendTracking_(tracking, email, "Failed", "Test Run", firstName, res.error, attachObj ? attachObj.name : "None", subject);
+      totals.failed++;
+      bulkProgressStep_("failed");
     }
   });
+  return totals;
 }
 
 function actualRunFlow_(recipients, tracking, message, attachObj, subject, alreadySent) {
+  var totals = { sent: 0, skipped: 0, failed: 0, planned: 0 };
+
   // Quick pre-check: if quota is 0, mark all as failed (not already sent)
   if (typeof MailApp.getRemainingDailyQuota === "function" && MailApp.getRemainingDailyQuota() <= 0) {
     recipients.forEach(function(firstName, email) {
       if (!alreadySent.has(email)) {
-       appendTracking_(tracking, email, "Failed", "Actual Run", firstName, "Rate limit reached before send", attachObj ? attachObj.name : "None", subject);
+        appendTracking_(tracking, email, "Failed", "Actual Run", firstName, "Rate limit reached before send", attachObj ? attachObj.name : "None", subject);
+        totals.failed++;
+        bulkProgressStep_("failed");
       }
     });
     Logger.log("Aborting: Rate limit reached.");
-    return;
+    return totals;
   }
 
   recipients.forEach(function(firstName, email) {
-    if (alreadySent.has(email)) return;
-    var body = message;
-    var res = safeSendEmail_(email, subject, body, attachObj);
+    if (alreadySent.has(email)) { totals.skipped++; bulkProgressStep_("skipped"); return; }
+    var res = safeSendEmail_(email, subject, message, attachObj);
     if (res.ok) {
       Logger.log("Email sent to: %s (%s) with attachment: %s", firstName, email, attachObj ? attachObj.name : "None");
       appendTracking_(tracking, email, "Sent", "Actual Run", firstName, "", attachObj ? attachObj.name : "None", subject);
-
+      totals.sent++;
+      bulkProgressStep_("sent");
     } else {
       Logger.log("Failed to send email to: %s Error: %s", email, res.error);
       appendTracking_(tracking, email, "Failed", "Actual Run", firstName, res.error, attachObj ? attachObj.name : "None", subject);
-
+      totals.failed++;
+      bulkProgressStep_("failed");
     }
   });
+  return totals;
 }
