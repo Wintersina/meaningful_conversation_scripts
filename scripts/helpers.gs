@@ -32,9 +32,7 @@ const COL_CONSTANTS = {
   TOTAL_ATTENDED_NO_RSVP: "Total Attended w/o RSVP",
   STOP_RSVP: "Stop RSVP",
   RSVP_2_PLUS: "RSVP 2+",
-  ATTENDED_PLUS_ONE:"ATTENDED 1+",
-  STOP_EMAIL:"Stop Email",
-  EMAIL_START:"Start Email"
+  ATTENDED_PLUS_ONE:"ATTENDED 1+"
 }
 
 // 0-based column indices into the Contact List row arrays (data[i][n]).
