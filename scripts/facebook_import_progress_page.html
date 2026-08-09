@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body { font-family: Roboto, Arial, sans-serif; font-size: 14px; color: #202124; margin: 0; }
+      .card { max-width: 560px; margin: 48px auto; padding: 0 16px; }
+      h2 { margin: 0 0 8px; }
+      h2.ok { color: #188038; }
+      h2.err { color: #c5221f; }
+      .spinner { width: 28px; height: 28px; border: 3px solid #e8f0fe; border-top-color: #1a73e8;
+                 border-radius: 50%; animation: spin 0.9s linear infinite; margin-bottom: 14px; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .bar { height: 8px; background: #f1f3f4; border-radius: 4px; overflow: hidden; margin: 10px 0 8px; }
+      .bar .fill { height: 100%; width: 0%; background: #1a73e8; border-radius: 4px; transition: width 0.4s; }
+      .foot { color: #5f6368; font-size: 12px; }
+      #result p { white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div id="live">
+        <div class="spinner"></div>
+        <h2 id="livetitle">Importing Facebook guests…</h2>
+        <div class="bar"><div class="fill" id="fill"></div></div>
+        <div id="progresstext">Starting up…</div>
+        <p class="foot" id="livefoot"></p>
+      </div>
+      <div id="result" style="display:none"></div>
+    </div>
+
+    <script>
+      var PAYLOAD = JSON.parse(<?!= JSON.stringify(payloadJson) ?>);
+      var pollTimer = null;
+      var finished = false;
+
+      function esc(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      }
+
+      function renderProgress(p) {
+        if (finished || !p) return;
+        if (p.total) {
+          document.getElementById('fill').style.width =
+            Math.min(100, Math.round(p.processed / p.total * 100)) + '%';
+        }
+        if (p.label) document.getElementById('progresstext').textContent = p.label;
+      }
+
+      function finish(ok, message) {
+        finished = true;
+        if (pollTimer) clearInterval(pollTimer);
+        document.getElementById('live').style.display = 'none';
+        var r = document.getElementById('result');
+        r.style.display = '';
+        r.innerHTML =
+          '<h2 class="' + (ok ? 'ok' : 'err') + '">' +
+          (ok ? '✓ Facebook CSV Import — done' : '✗ Facebook CSV Import — failed') + '</h2>' +
+          '<p>' + esc(message) + '</p>' +
+          '<p class="foot">Ran as ' + esc(PAYLOAD.account) + '. You can close this tab.</p>';
+      }
+
+      document.getElementById('livefoot').textContent =
+        'Running as ' + PAYLOAD.account + ' — keep this tab open until it finishes.';
+
+      google.script.run
+        .withSuccessHandler(function(msg) { finish(true, msg); })
+        .withFailureHandler(function(e) { finish(false, e && e.message ? e.message : String(e)); })
+        .importFacebookGuests(PAYLOAD.payload);
+
+      pollTimer = setInterval(function() {
+        if (finished) return;
+        google.script.run
+          .withSuccessHandler(renderProgress)
+          .withFailureHandler(function() {}) // polling is best-effort
+          .getComposerSendProgress(PAYLOAD.payload.progressToken);
+      }, 1200);
+    </script>
+  </body>
+</html>

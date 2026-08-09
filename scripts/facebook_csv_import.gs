@@ -38,33 +38,48 @@ function showFacebookCsvImportDialog() {
 /**
  * Web-app POST entry point. The popup's Import hops here via a hidden form
  * POST (guest lists are too large for GET query params), pinned to the team
- * account with ?authuser=. Performs the import and renders a result page.
+ * account with ?authuser=. Returns an instant "Importing…" progress page —
+ * the page runs the import via google.script.run (session-safe in a full
+ * tab) and polls CacheService snapshots, same as the Email Composer send.
  */
 function doPost(e) {
   var p = (e && e.parameter) || {};
-  if (p.action === "fbimport") return handleFacebookImportPost_(p);
+  if (p.action === "fbimport") return buildFacebookImportProgressPage_(p.payload);
   return HtmlService.createHtmlOutput("Unsupported request.");
 }
 
-function handleFacebookImportPost_(p) {
-  var ok, message;
+function buildFacebookImportProgressPage_(payloadStr) {
+  var payload;
   try {
-    message = importFacebookGuests(JSON.parse(p.payload));
-    ok = true;
+    payload = JSON.parse(payloadStr);
   } catch (err) {
-    message = (err && err.message) ? err.message : String(err);
-    ok = false;
+    return HtmlService.createHtmlOutput("Bad import payload.").setTitle("Facebook CSV Import");
   }
-  var runner = Session.getActiveUser().getEmail() || "(unknown account)";
-  var html =
-    '<div style="font-family:Roboto,Arial,sans-serif;font-size:14px;max-width:560px;margin:48px auto;padding:0 16px">' +
-    '<h2 style="color:' + (ok ? "#188038" : "#c5221f") + ';margin-bottom:8px">' +
-    (ok ? "✓ Facebook CSV Import — done" : "✗ Facebook CSV Import — failed") + "</h2>" +
-    "<p>" + escapeHtml_(message) + "</p>" +
-    '<p style="color:#5f6368;font-size:12px">Ran as ' + escapeHtml_(runner) +
-    ". You can close this tab.</p>" +
-    "</div>";
-  return HtmlService.createHtmlOutput(html).setTitle("Facebook CSV Import — result");
+  payload.progressToken = Utilities.getUuid();
+
+  var t = HtmlService.createTemplateFromFile("facebook_import_progress_page");
+  t.payloadJson = JSON.stringify({
+    payload: payload,
+    account: Session.getActiveUser().getEmail() || "(unknown account)"
+  }).replace(/</g, "\\u003c");
+  return t.evaluate()
+    .setTitle("Facebook CSV Import — importing")
+    .addMetaTag("viewport", "width=device-width, initial-scale=1");
+}
+
+/**
+ * Phase snapshot for the import progress page. Same cache key family the
+ * composer/bulk sends use, read by getComposerSendProgress. Best-effort.
+ */
+function fbImportProgress_(token, processed, total, label, done) {
+  if (!token) return;
+  try {
+    CacheService.getScriptCache().put(
+      "composerProgress:" + token,
+      JSON.stringify({ total: total, processed: processed, label: label, done: !!done }),
+      600
+    );
+  } catch (e) {}
 }
 
 /** Paren-stripping used by the EventBrite move's title matching, mirrored. */
@@ -161,6 +176,10 @@ function importFacebookGuests(payload) {
     .filter(function(r) { return r[1]; });
   if (rows.length === 0) throw new Error("No guest names found in the file.");
 
+  var token = payload.progressToken;
+  var steps = payload.moveNow ? 2 : 1;
+  fbImportProgress_(token, 0, steps, "Staging " + rows.length + " guest(s) in the EventBrite Import tab…");
+
   var startRow = Math.max(eventbriteSheet.getLastRow() + 1, HELPER_CONSTANTS.FIRST_DATA_ROW);
   eventbriteSheet
     .getRange(startRow, 1, rows.length, HELPER_CONSTANTS.EVENTBRITE_COLUMN_COUNT)
@@ -168,9 +187,12 @@ function importFacebookGuests(payload) {
 
   var guests = rows.length + (rows.length === 1 ? " guest" : " guests");
   if (!payload.moveNow) {
+    fbImportProgress_(token, 1, steps, "Staged.", true);
     return guests + ' staged in "' + SHEET_NAMES.EVENTBRITE + '" (not moved to the Contact List yet).';
   }
 
+  fbImportProgress_(token, 1, steps, "Moving guests into the Contact List (rows, formulas, formatting) — this is the slow part…");
   moveRowsFromEventBriteImportToContactList();
+  fbImportProgress_(token, 2, steps, "Done.", true);
   return guests + ' imported into the Contact List under "' + payload.eventTitle + '".';
 }

@@ -334,19 +334,32 @@
           document.body.appendChild(form);
           form.submit();
           form.remove();
-          setStatus('ok', '✓ Import opened in a new tab (as ' + DATA.sendAccount + ') — the result appears there. You can close this popup.');
+          setStatus('ok', '✓ Import opened in a new tab (as ' + DATA.sendAccount + ') — live progress and the result appear there. You can close this popup.');
           return;
         }
 
         btn.disabled = true;
         setStatus('', 'Working…');
 
+        // Full-tab mode: poll the same progress snapshots the hop page uses.
+        payload.progressToken = 'f' + Date.now() + Math.random().toString(36).slice(2);
+        var poll = setInterval(function() {
+          google.script.run
+            .withSuccessHandler(function(p) {
+              if (p && p.label) setStatus('', p.label);
+            })
+            .withFailureHandler(function() {}) // polling is best-effort
+            .getComposerSendProgress(payload.progressToken);
+        }, 1200);
+
         google.script.run
           .withSuccessHandler(function(msg) {
+            clearInterval(poll);
             setStatus('ok', '✓ ' + msg);
             recompute();
           })
           .withFailureHandler(function(e) {
+            clearInterval(poll);
             setStatus('err', '✗ ' + e.message);
             recompute();
           })
