@@ -77,7 +77,7 @@ contact-management spreadsheet. All code lives in `scripts/*.gs` +
 | File | What it does |
 |---|---|
 | `helpers.gs` | ALL shared constants (`SHEET_NAMES`, `COL_CONSTANTS`, `COLUMN_INDEX`, `RSVP_DROP_DOWN_CONSTANTS`, `HELPER_CONSTANTS`, `ROW_NUMBERS`, `FORMULAS`, `UI_CONSTANTS`, `SCHEDULE_SHEET_CONSTANTS`, `EMAILER_KEYS`, `MARKER_KEYS`), `columnToLetter`, `normalizeString` (apostrophes), `normalizeByStrippingWhiteSpaceAtTheEnd` (trim+collapse+lowercase), `sheetsByName()` → `[contactListSheet, eventbriteSheet, scheduleSheet]`, marker finders/pinners. |
-| `menu_items.gs` | `onOpen()` builds the "Custom Actions" menu (only when Contact List is active). |
+| `menu_items.gs` | `onOpen()` builds two menus: "Custom Actions" (sheet maintenance) and "Email" (Email Composer, Bulk Emailer, No-Email Report). |
 | `nightly_trigger.gs` | `nightlyTrigger()`: importNewEventsFromSchedule → EventBrite move → merge → copy attended/RSVP sections → sorts → markNoShows → calendar sync. |
 | `insert_new_col_and_row.gs` | `importNewEventsFromSchedule()`: finds first Schedule event not in Row 7 (title match + date within 7 days), inserts a new event column after O (formatting copied from old P, date = previous + 7 days skipping OFF weeks) and a new event block (title row + totals row + group) in the main list. Idempotent — no-ops when nothing new. |
 | `move_from_eventbrite_to_contact.gs` | Batch-moves staged rows into event blocks: bottom-up, inserts **two rows below the block title**, expands row groups first, writes values (B..L → C..M), name/count formulas, RSVP dropdown = `rsvp'd: yes\nattended: ?`, dashes to the right, formatting, deletes staged rows bottom-up. |
@@ -152,7 +152,7 @@ client-generated random strings (or `Utilities.getUuid()`).
 
 ## 7. Triggers & menu
 
-- `onOpen` → "Custom Actions" menu (Contact List only).
+- `onOpen` → "Custom Actions" menu (maintenance) + "Email" menu (Composer / Bulk Emailer / No-Email Report). Anything that sends mail belongs on the Email menu.
 - Nightly time-driven trigger → `nightlyTrigger()` (order matters: schedule import FIRST so event blocks exist before the EventBrite move).
 - Spreadsheet `onFormSubmit` → `onSignupFormSubmit` (create once via `setupSignupFormTrigger()`).
 

@@ -14,7 +14,7 @@
  * their attendance counts, and which Contact List rows they came from. When
  * everyone has an address the sheet says so explicitly and the count is zero.
  *
- * Entry points: Custom Actions → "No-Email Report…" (whole list) and the
+ * Entry points: Email → "No-Email Report…" (whole list) and the
  * "No-email report" button in the Bulk Emailer, which reports on the audience
  * currently selected there.
  */
@@ -219,7 +219,7 @@ function runNoEmailReport(audience) {
   };
 }
 
-/** Menu entry (Custom Actions → "No-Email Report…"): whole list. */
+/** Menu entry (Email → "No-Email Report…"): whole list. */
 function showNoEmailReport() {
   var result = runNoEmailReport(BULK_AUDIENCES.WHOLE);
   SpreadsheetApp.getActiveSpreadsheet().setActiveSheet(

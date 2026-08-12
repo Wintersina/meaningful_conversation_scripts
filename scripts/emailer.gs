@@ -15,7 +15,7 @@
  * with activity in that column or any later one. That's how to email "everyone
  * since In Search of True Friendship" without caring about row numbers.
  *
- * UI: Custom Actions → "Bulk Emailer…" opens a small launcher popup whose
+ * UI: Email → "Bulk Emailer…" opens a small launcher popup whose
  * button opens the full web-app tab (?page=bulkemailer) pinned to the team
  * account. In that tab google.script.run is session-safe, so the form loads
  * data, uploads attachments from the browser, sends via sendBulkEmails, and

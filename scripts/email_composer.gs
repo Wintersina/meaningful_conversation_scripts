@@ -1,5 +1,5 @@
 /**
- * Email Composer — a popup (Custom Actions → "Email Composer…") that preloads
+ * Email Composer — a popup (Email → "Email Composer…") that preloads
  * every event from the Contact List (upcoming first), shows how many people
  * each template would reach, and sends the chosen lifecycle template to the
  * people in that event's column.
