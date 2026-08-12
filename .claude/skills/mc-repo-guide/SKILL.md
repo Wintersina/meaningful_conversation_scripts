@@ -94,6 +94,7 @@ contact-management spreadsheet. All code lives in `scripts/*.gs` +
 | `bulk_emailer_dialog.html` | Bulk Emailer UI (launcher popup + full-tab form). |
 | `facebook_csv_import.gs` + `facebook_csv_import_dialog.html` | Facebook guest CSV → EventBrite-shaped staging rows ("Going" only) → normal move. `doPost` handler (`action=fbimport`). |
 | `cleanup_signup_origin.gs` | One-shot repair of conjoined K/L/M values (keeps left-most; col L matched against Row-7 titles because titles contain commas). |
+| `no_email_report.gs` | **No-Email Report** — groups an audience's rows by person and lists everyone with no valid address in col F, with phone / signup platform (K) / signup event (L) to reach them another way. Rebuilds the "No Email Report" sheet each run; says "Zero" explicitly when everyone is reachable. Menu item `showNoEmailReport` (whole list) + `runNoEmailReport(audience)` from the Bulk Emailer. |
 | `charts.gs` | RSVP vs attendance charts. |
 | `appsscript.json` | Timezone America/Chicago, V8, webapp `executeAs: USER_ACCESSING`, `access: ANYONE`, Calendar advanced service, scopes incl. `script.send_mail`, `script.external_request`. |
 
@@ -135,7 +136,8 @@ client-generated random strings (or `Utilities.getUuid()`).
 - **Audience** (`bulkAudienceBounds_`, 0-based inclusive bounds mirroring the sorts): `whole` = rows 13..last; `attended` = 13..(RSVP2+ row − 1); `rsvp` = (RSVP2+ row + 2)..(StopRSVP row − 2).
 - Body is TYPED (no Google Doc): `buildBulkEmailHtml_` escapes it and wraps in a serif card (blank line → paragraph, newline → `<br>`), footer "Meaningful Conversations · St. Louis, MO".
 - Attachment uploaded from browser as `{name, mimeType, dataB64}` → `Utilities.newBlob(Utilities.base64Decode(...))`. 20 MB client-side guard.
-- Filters: repeat-attendee (col E), per-event (Row-7 title → column, non-dash cell), attended-count strictly-more/less-than, exclude list.
+- Filters: repeat-attendee (col E), per-event (Row-7 title → column, non-dash cell), attended-count strictly-more/less-than, exclude list, and **active on/after an event** (`sinceEventKey` = `title|yyyy-MM-dd` → `sinceEventColumns_` resolves that event and every later one by Row-6 date; `sinceMode` `"attended"` | `"any"` = attended-yes vs. also RSVP yes/maybe). That's the "email everyone since <event>" audience — no row numbers involved.
+- `bulkRecipientPlan_(sheet, payload)` turns a UI payload into recipient-builder options + a label; `sendBulkEmails` and `previewBulkRecipients` (the form's "Preview recipients" button) both go through it, so the preview count can't disagree with the send.
 - Modes everywhere in this repo: `"dry"` (log Pending rows only) | `"test"` (send to editable test recipients) | `"actual"`. Test never consumes idempotency keys.
 - Batching: one email per ≤45 recipients (hard cap 50 recipients/message incl. To+CC+BCC; BCC mode reserves 1 for To-self). Default BCC for privacy.
 - **Personalize** option: forces one-email-per-person; `{{name}}` in the body → first name (fallback "there"). Subject is NOT personalized (tracking matches on exact subject).

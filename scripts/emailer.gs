@@ -10,6 +10,11 @@
  * "Start Email" / "Stop Email" column-A markers and the Google-Doc message
  * source are gone: everything is configured in the Bulk Emailer UI.
  *
+ * On top of the audience, filters narrow the slice — including "active on or
+ * after <event>", which picks an event column by title + date and keeps anyone
+ * with activity in that column or any later one. That's how to email "everyone
+ * since In Search of True Friendship" without caring about row numbers.
+ *
  * UI: Custom Actions → "Bulk Emailer…" opens a small launcher popup whose
  * button opens the full web-app tab (?page=bulkemailer) pinned to the team
  * account. In that tab google.script.run is session-safe, so the form loads
@@ -38,6 +43,16 @@ var BULK_EMAILER_DEFAULTS = {
 };
 
 var BULK_AUDIENCES = { WHOLE: "whole", ATTENDED: "attended", RSVP: "rsvp" };
+
+/** What counts as "active" for the since-event filter. */
+var BULK_SINCE_MODES = { ATTENDED: "attended", ANY: "any" };
+
+/** Human labels for an audience, used in summaries and the report sheet. */
+var BULK_AUDIENCE_LABELS = {
+  whole: "whole list",
+  attended: "Attended section",
+  rsvp: "RSVP 2+ section"
+};
 
 /**
  * 0-based [start, end] row bounds (inclusive, into getDataRange().getValues())
@@ -72,6 +87,48 @@ function bulkAudienceBounds_(data, audience) {
   }
 
   throw new Error('Unknown audience "' + audience + '" (use whole | attended | rsvp)');
+}
+
+/**
+ * Resolves an event picked as a cutoff into the 0-based column indices of that
+ * event and every LATER one (compared by the Row 6 dates, so it doesn't matter
+ * where the columns physically sit). This is what lets an audience be described
+ * as "everyone active since <event>" instead of by row numbers.
+ *
+ * eventKey is "<title>|<yyyy-MM-dd>" — the same key the Email Composer uses, so
+ * a repeat of a topic on a new date stays a distinct event.
+ * Returns { anchor: <event>, cols0: [..] }.
+ */
+function sinceEventColumns_(contactSheet, eventKey) {
+  var events = getAllEventColumns_(contactSheet, lifecycleEmailerConfig_()); // ascending by date
+  var anchor = null;
+  for (var i = 0; i < events.length; i++) {
+    if (events[i].eventKey === eventKey) { anchor = events[i]; break; }
+  }
+  if (!anchor) {
+    throw new Error('Could not find the "active since" event: "' + eventKey + '" (was its column changed?)');
+  }
+
+  var cols0 = [];
+  for (var j = 0; j < events.length; j++) {
+    if (events[j].date >= anchor.date) cols0.push(events[j].col0);
+  }
+  return { anchor: anchor, cols0: cols0 };
+}
+
+/**
+ * True when a row shows activity in any of the since-event columns.
+ *   sinceMode "attended" — only "attended: yes" counts
+ *   sinceMode "any"      — attended, or an RSVP of yes/maybe
+ * Declines and no-shows never count on their own.
+ */
+function rowIsActiveSince_(row, cols0, sinceMode) {
+  for (var i = 0; i < cols0.length; i++) {
+    var cell = row[cols0[i]];
+    if (cellIsAttended_(cell)) return true;
+    if (sinceMode === BULK_SINCE_MODES.ANY && rsvpCellIsSignup_(cell, true)) return true;
+  }
+  return false;
 }
 
 /**
@@ -148,7 +205,7 @@ function getBulkEmailerData() {
   });
 
   var events = getAllEventColumns_(contactSheet, lifecycleEmailerConfig_())
-    .map(function(e) { return { title: e.title, dateStr: e.dateStr }; });
+    .map(function(e) { return { title: e.title, dateStr: e.dateStr, eventKey: e.eventKey }; });
   events.reverse(); // newest first
 
   return {
@@ -171,6 +228,8 @@ function getBulkEmailerData() {
  *     subject, bodyText, testRecipients: "a@x, b@y",
  *     attachment: { name, mimeType, dataB64 } | null,
  *     filterRepeat: bool, eventTitle: "" | title,
+ *     sinceEventKey: "" | "<title>|<yyyy-MM-dd>" (that event and every later
+ *       one), sinceMode: "attended" | "any",
  *     attendedMoreThan: number|null, attendedLessThan: number|null,
  *     excludeEmails: "a@x, b@y", skipAlreadySent: bool,
  *     personalize: bool (one email per person; {{name}} in the body becomes
@@ -217,35 +276,9 @@ function sendBulkEmails(payload) {
     recipients = buildTestRecipients_(testList);
     audienceLabel = "test recipients";
   } else {
-    var audience = payload.audience || BULK_AUDIENCES.WHOLE;
-    audienceLabel = audience === BULK_AUDIENCES.WHOLE ? "whole list"
-      : audience === BULK_AUDIENCES.ATTENDED ? "Attended section" : "RSVP 2+ section";
-
-    var eventColIdx = -1;
-    if (payload.eventTitle) {
-      eventColIdx = findEventColumnByTitle_(contactSheet, payload.eventTitle);
-      if (eventColIdx === -1) throw new Error('Event title not found in Row 7: "' + payload.eventTitle + '"');
-    }
-
-    var moreThan = (payload.attendedMoreThan == null || payload.attendedMoreThan === "") ? null : Number(payload.attendedMoreThan);
-    var lessThan = (payload.attendedLessThan == null || payload.attendedLessThan === "") ? null : Number(payload.attendedLessThan);
-    var attendedColIdx = -1;
-    if (moreThan != null || lessThan != null) {
-      attendedColIdx = findAttendedCountColumn_(contactSheet);
-      if (attendedColIdx === -1) throw new Error('Column "' + COL_CONSTANTS.EVENTS_ATTENDED + '" not found in Row 5.');
-    }
-
-    var excludeEmails = String(payload.excludeEmails || "").split(/[,;\n]+/).map(function(s) { return s.trim(); }).filter(Boolean);
-
-    recipients = buildUniqueRecipientsFromSheet_(contactSheet, {
-      audience: audience,
-      filterRepeat: !!payload.filterRepeat,
-      eventColIdx: eventColIdx,
-      attendedColIdx: attendedColIdx,
-      attendedMoreThan: moreThan,
-      attendedLessThan: lessThan,
-      excludeEmails: excludeEmails
-    });
+    var plan = bulkRecipientPlan_(contactSheet, payload);
+    audienceLabel = plan.label;
+    recipients = buildUniqueRecipientsFromSheet_(contactSheet, plan.opts);
   }
 
   var alreadySent = payload.skipAlreadySent ? buildSentSet_(tracking, subject) : new Set();
@@ -284,6 +317,68 @@ function sendBulkEmails(payload) {
     parts.join(", ") + "." +
     (personalize ? " Personalized per recipient." : "") +
     (attach ? ' Attachment: "' + attach.name + '".' : "");
+}
+
+/**
+ * Turns a UI payload's audience + filter fields into the options
+ * buildUniqueRecipientsFromSheet_ wants, plus a human label describing the
+ * slice. Shared by sendBulkEmails and previewBulkRecipients so the preview
+ * count can never disagree with what a send would actually do.
+ */
+function bulkRecipientPlan_(contactSheet, payload) {
+  var audience = payload.audience || BULK_AUDIENCES.WHOLE;
+  var label = BULK_AUDIENCE_LABELS[audience] || audience;
+
+  var eventColIdx = -1;
+  if (payload.eventTitle) {
+    eventColIdx = findEventColumnByTitle_(contactSheet, payload.eventTitle);
+    if (eventColIdx === -1) throw new Error('Event title not found in Row 7: "' + payload.eventTitle + '"');
+  }
+
+  var sinceCols0 = [];
+  var sinceMode = payload.sinceMode || BULK_SINCE_MODES.ATTENDED;
+  if (payload.sinceEventKey) {
+    var since = sinceEventColumns_(contactSheet, payload.sinceEventKey);
+    sinceCols0 = since.cols0;
+    label += ", " + (sinceMode === BULK_SINCE_MODES.ANY ? "RSVP'd or attended" : "attended") +
+      ' on/after "' + since.anchor.title + '" (' + since.anchor.dateStr + ")";
+  }
+
+  var moreThan = (payload.attendedMoreThan == null || payload.attendedMoreThan === "") ? null : Number(payload.attendedMoreThan);
+  var lessThan = (payload.attendedLessThan == null || payload.attendedLessThan === "") ? null : Number(payload.attendedLessThan);
+  var attendedColIdx = -1;
+  if (moreThan != null || lessThan != null) {
+    attendedColIdx = findAttendedCountColumn_(contactSheet);
+    if (attendedColIdx === -1) throw new Error('Column "' + COL_CONSTANTS.EVENTS_ATTENDED + '" not found in Row 5.');
+  }
+
+  var excludeEmails = String(payload.excludeEmails || "").split(/[,;\n]+/).map(function(s) { return s.trim(); }).filter(Boolean);
+
+  return {
+    label: label,
+    opts: {
+      audience: audience,
+      filterRepeat: !!payload.filterRepeat,
+      eventColIdx: eventColIdx,
+      sinceCols0: sinceCols0,
+      sinceMode: sinceMode,
+      attendedColIdx: attendedColIdx,
+      attendedMoreThan: moreThan,
+      attendedLessThan: lessThan,
+      excludeEmails: excludeEmails
+    }
+  };
+}
+
+/**
+ * Counts exactly who a send would reach with the current audience + filters,
+ * without sending or logging anything. Called by the Bulk Emailer form's
+ * "Preview recipients" button. Returns { count, label }.
+ */
+function previewBulkRecipients(payload) {
+  var [contactSheet] = sheetsByName();
+  var plan = bulkRecipientPlan_(contactSheet, payload || {});
+  return { count: buildUniqueRecipientsFromSheet_(contactSheet, plan.opts).size, label: plan.label };
 }
 
 /**
@@ -426,6 +521,8 @@ function findAttendedCountColumn_(sheet) {
  *   audience         — "whole" | "attended" | "rsvp" (see bulkAudienceBounds_)
  *   filterRepeat     — only rows where col E == "repeat attendee"
  *   eventColIdx      — >= 0: only rows with a non-empty, non-dash value there
+ *   sinceCols0       — non-empty: only rows active in one of those event columns
+ *   sinceMode        — "attended" (default) | "any" (see rowIsActiveSince_)
  *   attendedColIdx   — >= 0: apply the attended-count bounds below
  *   attendedMoreThan — strictly-greater bound (null = off)
  *   attendedLessThan — strictly-less bound (null = off)
@@ -445,6 +542,8 @@ function buildUniqueRecipientsFromSheet_(sheet, opts) {
 
   var repeatTarget = BULK_EMAILER_DEFAULTS.REPEAT_FLAG_VALUE.toLowerCase();
   var shouldFilterEvent = (opts.eventColIdx != null && opts.eventColIdx >= 0);
+  var sinceCols0 = opts.sinceCols0 || [];
+  var sinceMode = opts.sinceMode || BULK_SINCE_MODES.ATTENDED;
   var shouldFilterAttended = (opts.attendedColIdx != null && opts.attendedColIdx >= 0);
   var attendedMin = (opts.attendedMoreThan != null) ? Number(opts.attendedMoreThan) : null;
   var attendedMax = (opts.attendedLessThan != null) ? Number(opts.attendedLessThan) : null;
@@ -469,6 +568,8 @@ function buildUniqueRecipientsFromSheet_(sheet, opts) {
       var eventVal = (row[opts.eventColIdx] || "").toString().trim();
       if (!eventVal || eventVal === "-" || eventVal === "--") continue;
     }
+
+    if (sinceCols0.length && !rowIsActiveSince_(row, sinceCols0, sinceMode)) continue;
 
     if (shouldFilterAttended) {
       var attendedCount = Number(row[opts.attendedColIdx]);
@@ -496,6 +597,10 @@ function buildUniqueRecipientsFromSheet_(sheet, opts) {
 
   if (shouldFilterEvent) {
     Logger.log("Event filter: " + map.size + " recipients with RSVP/attendance in event column");
+  }
+  if (sinceCols0.length) {
+    Logger.log("Since-event filter (%s): %s recipients active across %s event column(s).",
+      sinceMode, map.size, sinceCols0.length);
   }
   if (shouldFilterAttended) {
     var boundsDesc = [];

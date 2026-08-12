@@ -17,6 +17,7 @@ function onOpen() {
         .addItem("Mark Attendance from Signup Sheet", 'markAttendanceFromSignupSheet')
         .addItem("Email Composer…", 'showEmailComposerDialog')
         .addItem("Bulk Emailer…", 'showBulkEmailerDialog')
+        .addItem("No-Email Report…", 'showNoEmailReport')
         //.addItem("Clean Up Signup Origin Columns (K/L/M)", 'cleanupSignupOriginColumns')
         .addSeparator()
         .addItem("Generate Data Analysis Graphs", 'createRSVPvsAttendanceChart')

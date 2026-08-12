@@ -35,6 +35,8 @@
       #drop { border: 2px dashed #dadce0; border-radius: 10px; padding: 16px 12px; text-align: center; color: #5f6368; cursor: pointer; }
       #drop.over { border-color: #1a73e8; background: #e8f0fe; color: #1967d2; }
       #drop.loaded { border-style: solid; border-color: #188038; background: #e6f4ea; color: #188038; }
+      button.secondary { width: 100%; padding: 8px; border: 1px solid #dadce0; border-radius: 8px; background: #fff; color: #1a73e8; font-weight: 500; cursor: pointer; }
+      button.secondary:disabled { color: #80868b; cursor: default; }
       #sendBtn { width: 100%; padding: 10px; border: 0; border-radius: 8px; background: #1a73e8; color: #fff; font-weight: 500; cursor: pointer; }
       #sendBtn:disabled { background: #dadce0; color: #80868b; cursor: default; }
       #sendBtn.danger { background: #c5221f; }
@@ -117,6 +119,11 @@
           return '<option value="' + esc(e.title) + '">' + esc(e.title) + ' — ' + esc(e.dateStr) + '</option>';
         }).join('');
 
+        // Same list keyed by "<title>|<date>", so a repeated topic stays distinct.
+        var sinceOptions = '<option value="">(no cutoff — all events)</option>' + DATA.events.map(function(e) {
+          return '<option value="' + esc(e.eventKey) + '">' + esc(e.title) + ' — ' + esc(e.dateStr) + '</option>';
+        }).join('');
+
         var modes = ['dry', 'test', 'actual'].map(function(m) {
           var sel = (m === 'test');
           return '<label id="mode-' + m + '" class="' + (sel ? 'sel' : '') + (m === 'actual' ? ' danger' : '') + '">' +
@@ -145,6 +152,13 @@
           '<label class="check"><input type="checkbox" id="filterRepeat"> Only rows marked “' + esc(DATA.defaults.repeatFlagValue) + '” (column E)</label>' +
           '<div class="row2" style="margin-top:8px"><div><label class="block">Only people in event</label><select id="eventFilter">' + evOptions + '</select></div></div>' +
           '<div class="row2" style="margin-top:8px">' +
+          '<div><label class="block">Active on or after event</label><select id="sinceEvent">' + sinceOptions + '</select></div>' +
+          '<div><label class="block">…where “active” means</label><select id="sinceMode">' +
+          '<option value="attended">Attended</option>' +
+          '<option value="any">RSVP’d or attended</option></select></div>' +
+          '</div>' +
+          '<p class="hint">Picks everyone with activity in that event’s column or any later one — the cutoff is the event, so row numbers never come into it.</p>' +
+          '<div class="row2" style="margin-top:8px">' +
           '<div><label class="block"># Attended more than</label><input type="number" id="moreThan" placeholder="(off)" min="0"></div>' +
           '<div><label class="block"># Attended less than</label><input type="number" id="lessThan" placeholder="(off)" min="0"></div>' +
           '</div>' +
@@ -169,6 +183,11 @@
           '<div id="testRow" style="margin-top:8px"><label class="block">Test recipients</label>' +
           '<input type="text" id="testRecipients" value="' + esc(DATA.defaults.testRecipients) + '"></div></div>' +
 
+          '<div class="row2" style="margin-bottom:10px">' +
+          '<div><button class="secondary" id="previewBtn">Preview recipients</button></div>' +
+          '<div><button class="secondary" id="reportBtn">Who has no email?</button></div>' +
+          '</div>' +
+
           '<button id="sendBtn">Send</button>' +
           '<div class="bar" id="bar"><div class="fill" id="fill"></div></div>' +
           '<div id="status"></div>';
@@ -181,7 +200,68 @@
           $(id).addEventListener('input', refresh);
         });
         $('sendBtn').addEventListener('click', send);
+        $('previewBtn').addEventListener('click', preview);
+        $('reportBtn').addEventListener('click', report);
         refresh();
+      }
+
+      // Audience + every filter, exactly as the server wants them. Shared by
+      // Send and Preview so the preview count is the real send count.
+      function audiencePayload() {
+        return {
+          audience: selected('aud'),
+          filterRepeat: $('filterRepeat').checked,
+          eventTitle: $('eventFilter').value,
+          sinceEventKey: $('sinceEvent').value,
+          sinceMode: $('sinceMode').value,
+          attendedMoreThan: $('moreThan').value === '' ? null : Number($('moreThan').value),
+          attendedLessThan: $('lessThan').value === '' ? null : Number($('lessThan').value),
+          excludeEmails: $('exclude').value
+        };
+      }
+
+      function anyFilterActive() {
+        var p = audiencePayload();
+        return !!(p.filterRepeat || p.eventTitle || p.sinceEventKey ||
+          p.attendedMoreThan !== null || p.attendedLessThan !== null || p.excludeEmails.trim());
+      }
+
+      // Counts who the current audience + filters actually reach, without
+      // sending or logging anything.
+      function preview() {
+        var btn = $('previewBtn');
+        btn.disabled = true;
+        setStatus('', 'Counting recipients…');
+        google.script.run
+          .withSuccessHandler(function(res) {
+            btn.disabled = false;
+            setStatus('ok', '✓ ' + res.count + (res.count === 1 ? ' person matches' : ' people match') + ' — ' + res.label + '.');
+          })
+          .withFailureHandler(function(e) {
+            btn.disabled = false;
+            setStatus('err', '✗ ' + e.message);
+          })
+          .previewBulkRecipients(audiencePayload());
+      }
+
+      // Rebuilds the "No Email Report" sheet for the selected audience.
+      function report() {
+        var btn = $('reportBtn');
+        btn.disabled = true;
+        setStatus('', 'Building the No Email Report…');
+        google.script.run
+          .withSuccessHandler(function(res) {
+            btn.disabled = false;
+            var el = $('status');
+            el.className = (res.count === 0) ? 'ok' : '';
+            el.innerHTML = esc(res.message) +
+              ' <a href="' + esc(res.sheetUrl) + '" target="_blank">Open the report</a>';
+          })
+          .withFailureHandler(function(e) {
+            btn.disabled = false;
+            setStatus('err', '✗ ' + e.message);
+          })
+          .runNoEmailReport(selected('aud'));
       }
 
       function selected(name) {
@@ -285,29 +365,25 @@
       function send() {
         var mode = selected('mode');
         var aud = selected('aud');
-        var payload = {
-          mode: mode,
-          audience: aud,
-          subject: $('subject').value.trim(),
-          bodyText: $('body').value,
-          testRecipients: $('testRecipients').value,
-          attachment: ATTACHMENT ? { name: ATTACHMENT.name, mimeType: ATTACHMENT.mimeType, dataB64: ATTACHMENT.dataB64 } : null,
-          filterRepeat: $('filterRepeat').checked,
-          eventTitle: $('eventFilter').value,
-          attendedMoreThan: $('moreThan').value === '' ? null : Number($('moreThan').value),
-          attendedLessThan: $('lessThan').value === '' ? null : Number($('lessThan').value),
-          excludeEmails: $('exclude').value,
-          skipAlreadySent: $('skipSent').checked,
-          personalize: $('personalize').checked,
-          batchSingle: $('batchSingle').checked,
-          batchMode: $('batchMode').value,
-          batchSize: Number($('batchSize').value) || 45,
-          progressToken: 'b' + Date.now() + Math.random().toString(36).slice(2)
-        };
+        var payload = audiencePayload();
+        payload.mode = mode;
+        payload.subject = $('subject').value.trim();
+        payload.bodyText = $('body').value;
+        payload.testRecipients = $('testRecipients').value;
+        payload.attachment = ATTACHMENT ? { name: ATTACHMENT.name, mimeType: ATTACHMENT.mimeType, dataB64: ATTACHMENT.dataB64 } : null;
+        payload.skipAlreadySent = $('skipSent').checked;
+        payload.personalize = $('personalize').checked;
+        payload.batchSingle = $('batchSingle').checked;
+        payload.batchMode = $('batchMode').value;
+        payload.batchSize = Number($('batchSize').value) || 45;
+        payload.progressToken = 'b' + Date.now() + Math.random().toString(36).slice(2);
 
         if (mode === 'actual') {
           var n = DATA.counts[aud] || 0;
-          if (!confirm('Send REAL emails to up to ' + n + ' people (' + AUD_META[aud].label + ') with subject "' + payload.subject + '"?')) return;
+          var who = anyFilterActive()
+            ? 'the filtered slice of the ' + AUD_META[aud].label + ' (up to ' + n + ' people — use Preview recipients for the exact count)'
+            : n + ' people (' + AUD_META[aud].label + ')';
+          if (!confirm('Send REAL emails to ' + who + ' with subject "' + payload.subject + '"?')) return;
         }
 
         var btn = $('sendBtn');
