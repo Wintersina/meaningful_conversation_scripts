@@ -181,6 +181,17 @@ function importNewEventsFromSchedule() {
 
   const insertRowIndex = totalRSVPRowIndex + 1;
 
+  // Make sure the grid actually extends far enough for both inserts below.
+  // insertRows(n, 1) requires n <= getMaxRows(), so when the last "Total RSVP'd"
+  // block sits near the bottom of the sheet the second insert throws
+  // "Those rows are out of bounds". Pad generously so this does not recur on
+  // the next several events.
+  const neededRows = insertRowIndex + 5;
+  const maxRows = contactListSheet.getMaxRows();
+  if (maxRows < neededRows) {
+    contactListSheet.insertRowsAfter(maxRows, neededRows - maxRows + GRID_ROW_PADDING);
+  }
+
   // Insert two rows (these inserts may cause Sheets to auto-adjust CF ranges—this is unavoidable,
   // but we do NOT programmatically alter CF rules anywhere in this script.)
   contactListSheet.insertRows(insertRowIndex, 1);

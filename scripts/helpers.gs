@@ -91,6 +91,10 @@ const FORMULAS = {
 };
 
 
+// Extra blank rows to append when the Contact List grid runs out of room, so a
+// single new event block does not immediately exhaust the sheet again.
+const GRID_ROW_PADDING = 50;
+
 const ROW_NUMBERS = {
   ROW_1 : 1,
   ROW_2 : 2,
