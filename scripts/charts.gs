@@ -330,60 +330,36 @@ function createAllYearsTopRSVPSection_(sheet, startRow) {
 }
 
 /**
- * Frequent Attendees section (3+ events attended), placed on the overview sheet.
+ * Frequent Attendees roster (3+ events attended), placed on the overview sheet.
+ * Fed by the same per-person roll-up as the engagement sections above, so the
+ * roster length always matches the "3+" row in the threshold table.
  */
-function createFrequentAttendeesSection_(sheet, startRow) {
-  const [contactListSheet] = sheetsByName();
-  const lastRow = contactListSheet.getLastRow();
+function createFrequentAttendeesSection_(sheet, startRow, people) {
+  people = people || extractPeopleEngagement_();
 
-  const attendedCol1 = findColMarker_(contactListSheet, MARKER_KEYS.EVENTS_ATTENDED, COL_CONSTANTS.EVENTS_ATTENDED);
-  if (attendedCol1 === -1) {
-    sheet.getRange(startRow, 1).setValue("Could not find '# Events Attended' column.");
-    return startRow + 2;
-  }
-
-  const dataStartRow = ROW_NUMBERS.ROW_12;
-  const numRows = lastRow - dataStartRow + 1;
-  if (numRows <= 0) {
-    sheet.getRange(startRow, 1).setValue("No data rows found in Contact List.");
-    return startRow + 2;
-  }
-
-  const namesValues    = contactListSheet.getRange(dataStartRow, 1,            numRows, 1).getValues();
-  const attendedValues = contactListSheet.getRange(dataStartRow, attendedCol1, numRows, 1).getValues();
-
-  const seen = new Set();
-  const frequentAttendees = [];
-  for (let i = 0; i < namesValues.length; i++) {
-    const name = String(namesValues[i][0]).trim();
-    if (!name || seen.has(name)) continue;
-    const attended = typeof attendedValues[i][0] === "number"
-      ? attendedValues[i][0]
-      : Number(attendedValues[i][0]);
-    if (isNaN(attended) || attended < 3) continue;
-    seen.add(name);
-    frequentAttendees.push([name, attended]);
-  }
+  const frequentAttendees = people
+    .filter(p => p.attended >= FREQUENT_ATTENDEE_MIN)
+    .sort((a, b) => b.attended - a.attended)
+    .map(p => [p.name, p.attended]);
 
   const titleCell = sheet.getRange(startRow, 1);
-  titleCell.setValue("Frequent Attendees (3+ Events)");
+  titleCell.setValue("Frequent Attendees (" + FREQUENT_ATTENDEE_MIN + "+ Events)");
   titleCell.setFontSize(12).setFontWeight("bold");
 
   if (frequentAttendees.length === 0) {
-    sheet.getRange(startRow + 1, 1).setValue("No attendees have attended 3 or more events yet.");
+    sheet.getRange(startRow + 1, 1)
+         .setValue("No attendees have attended " + FREQUENT_ATTENDEE_MIN + " or more events yet.");
     return startRow + 3;
   }
 
-  frequentAttendees.sort((a, b) => b[1] - a[1]);
-
-  const hdrRange = sheet.getRange(startRow + 1, 1, 1, 2);
-  hdrRange.setValues([["Name", "Times Attended"]]).setFontWeight("bold");
+  sheet.getRange(startRow + 1, 1, 1, 2).setValues([["Name", "Times Attended"]]).setFontWeight("bold");
 
   const dataRange = sheet.getRange(startRow + 2, 1, frequentAttendees.length, 2);
   dataRange.setValues(frequentAttendees);
   dataRange.offset(0, 1, frequentAttendees.length, 1).setNumberFormat("0");
 
-  Logger.log("Frequent attendees: " + frequentAttendees.length + " people attended 3+ times");
+  Logger.log("Frequent attendees: " + frequentAttendees.length + " people attended " +
+             FREQUENT_ATTENDEE_MIN + "+ times");
   return startRow + 2 + frequentAttendees.length + 2;
 }
 
@@ -567,11 +543,367 @@ function createAllYearSections_(sheet, startRow) {
   return startRow;
 }
 
+// ─── PERSON-CENTRIC ENGAGEMENT ───────────────────────────────────────────────
+//
+// Everything above this line counts EVENTS: the row-9/row-10 "TTL RSVP =" and
+// "TTL ATTND =" cells are per-event totals, so somebody who RSVP'd to twelve
+// events is twelve RSVPs up there. The sections below count PEOPLE instead,
+// off the per-person "# Events RSVP'd" / "# Events Attended" counter columns,
+// so one individual is one individual no matter how often they showed up.
+// All of it is read-only against the Contact List.
+
+/** Cumulative thresholds reported for both RSVPs and attendance. */
+const ENGAGEMENT_THRESHOLDS = [1, 2, 3, 5, 10, 20, 50];
+
+/** Non-overlapping frequency buckets, in display order (max null = no cap). */
+const ENGAGEMENT_BUCKETS = [
+  { label: "1 time",      min: 1,  max: 1    },
+  { label: "2 times",     min: 2,  max: 2    },
+  { label: "3–4 times",   min: 3,  max: 4    },
+  { label: "5–9 times",   min: 5,  max: 9    },
+  { label: "10–19 times", min: 10, max: 19   },
+  { label: "20–49 times", min: 20, max: 49   },
+  { label: "50+ times",   min: 50, max: null }
+];
+
+/** Rows an inserted chart covers, so the next section doesn't sit underneath it. */
+const CHART_ROW_SPAN = 20;
+
+/** Events attended before someone counts as a "frequent attendee". */
+const FREQUENT_ATTENDEE_MIN = 3;
+
+/** Longest outreach roster written before it's truncated with a "…and N more". */
+const HIGH_INTEREST_LIST_LIMIT = 50;
+
+/** Counter cells hold a number, or "" when their IFERROR fires. */
+function toEngagementCount_(value) {
+  if (typeof value === "number") return value > 0 ? value : 0;
+  const n = Number(String(value).trim());
+  return isNaN(n) || n < 0 ? 0 : n;
+}
+
+/**
+ * Labels that are section furniture ("Stop RSVP", "Total RSVP'd", …) rather
+ * than people. Built lazily: helpers.gs loads *after* charts.gs, so COL_CONSTANTS
+ * must not be touched at file-evaluation time.
+ */
+function sectionLabelKeys_() {
+  const keys = new Set();
+  Object.keys(COL_CONSTANTS).forEach(k => {
+    keys.add(normalizeByStrippingWhiteSpaceAtTheEnd(COL_CONSTANTS[k]));
+  });
+  return keys;
+}
+
+/**
+ * Roll the Contact List up to one record per person.
+ *
+ * The sheet holds the same person more than once on purpose — the Attended and
+ * RSVP 2+ sections at the top are copies of main-list rows — so rows are keyed
+ * by the normalised col-A full-name key and the highest counter seen wins.
+ *
+ * @return {{name: string, rsvp: number, attended: number}[]}
+ */
+function extractPeopleEngagement_() {
+  const [contactListSheet] = sheetsByName();
+  const lastRow = contactListSheet.getLastRow();
+
+  const rsvpCol     = findColMarker_(contactListSheet, MARKER_KEYS.EVENTS_RSVPD,    COL_CONSTANTS.EVENTS_RSVPD);
+  const attendedCol = findColMarker_(contactListSheet, MARKER_KEYS.EVENTS_ATTENDED, COL_CONSTANTS.EVENTS_ATTENDED);
+  if (rsvpCol === -1 || attendedCol === -1) {
+    throw new Error('Could not find the "' + COL_CONSTANTS.EVENTS_RSVPD + '" and/or "' +
+                    COL_CONSTANTS.EVENTS_ATTENDED + '" column in Row 5.');
+  }
+
+  const dataStartRow = ROW_NUMBERS.ROW_12;
+  const numRows = lastRow - dataStartRow + 1;
+  if (numRows <= 0) return [];
+
+  const names    = contactListSheet.getRange(dataStartRow, 1,           numRows, 1).getValues();
+  const rsvps    = contactListSheet.getRange(dataStartRow, rsvpCol,     numRows, 1).getValues();
+  const attendeds= contactListSheet.getRange(dataStartRow, attendedCol, numRows, 1).getValues();
+
+  const skip  = sectionLabelKeys_();
+  const byKey = {};
+
+  for (let i = 0; i < numRows; i++) {
+    const display = String(names[i][0]).trim();
+    if (!display) continue;
+
+    const key = normalizeByStrippingWhiteSpaceAtTheEnd(display);
+    if (!key || skip.has(key)) continue; // marker row, not a person
+
+    const rsvp     = toEngagementCount_(rsvps[i][0]);
+    const attended = toEngagementCount_(attendeds[i][0]);
+
+    const existing = byKey[key];
+    if (existing) {
+      existing.rsvp     = Math.max(existing.rsvp,     rsvp);
+      existing.attended = Math.max(existing.attended, attended);
+    } else {
+      byKey[key] = { name: display, rsvp: rsvp, attended: attended };
+    }
+  }
+
+  const people = Object.keys(byKey).map(k => byKey[k]);
+  Logger.log("Engagement roll-up: " + people.length + " unique individuals");
+  return people;
+}
+
+/** How many people hit `field` at least `n` times. */
+function countAtLeast_(people, field, n) {
+  return people.filter(p => p[field] >= n).length;
+}
+
+/** [[bucketLabel, peopleInBucket], …] for one counter field. */
+function bucketCounts_(people, field) {
+  return ENGAGEMENT_BUCKETS.map(b => {
+    const n = people.filter(p => {
+      const v = p[field];
+      return v >= b.min && (b.max === null || v <= b.max);
+    }).length;
+    return [b.label, n];
+  });
+}
+
+function pct_(part, whole) {
+  return whole > 0 ? round1_(part / whole * 100) : 0;
+}
+
+/**
+ * Insert a COLUMN chart (vertical bars) — used where categories are short
+ * labels and two series sit side by side.
+ */
+function insertColumnChart_(sheet, dataRange, anchorRow, anchorCol, title, hAxisTitle, series) {
+  SpreadsheetApp.flush(); // commit all pending cell writes before chart reads the range
+  const chart = sheet.newChart()
+    .setChartType(Charts.ChartType.COLUMN)
+    .addRange(dataRange)
+    .setNumHeaders(1)
+    .setPosition(anchorRow, anchorCol, 0, 0)
+    .setOption("title", title)
+    .setOption("vAxis", { title: "Individuals", minValue: 0 })
+    .setOption("hAxis", { title: hAxisTitle || "" })
+    .setOption("series", series)
+    .setOption("legend", { position: "bottom" })
+    .build();
+  sheet.insertChart(chart);
+}
+
+/**
+ * Headline head-count table: how many individuals RSVP'd, how many came, how
+ * many did either more than once, and how the two populations overlap.
+ */
+function createEngagementOverviewSection_(sheet, startRow, people) {
+  people = people || extractPeopleEngagement_();
+
+  startRow = writeTitle_(sheet, startRow, 1, "Individual Engagement — People, Not Seats", 13);
+
+  if (people.length === 0) {
+    sheet.getRange(startRow, 1).setValue("No people found in the Contact List.");
+    return startRow + 2;
+  }
+
+  const totalPeople   = people.length;
+  const everRsvped    = countAtLeast_(people, "rsvp", 1);
+  const rsvpedTwice   = countAtLeast_(people, "rsvp", 2);
+  const everAttended  = countAtLeast_(people, "attended", 1);
+  const attendedTwice = countAtLeast_(people, "attended", 2);
+  const rsvpNoShow    = people.filter(p => p.rsvp >= 1 && p.attended === 0).length;
+  const walkInOnly    = people.filter(p => p.attended >= 1 && p.rsvp === 0).length;
+  const converted     = people.filter(p => p.rsvp >= 1 && p.attended >= 1).length;
+
+  const rows = [
+    ["Metric", "Individuals", "% of list"],
+    ["Individuals in the Contact List",           totalPeople,   100],
+    ["Ever RSVP'd",                               everRsvped,    pct_(everRsvped,    totalPeople)],
+    ["RSVP'd more than once",                     rsvpedTwice,   pct_(rsvpedTwice,   totalPeople)],
+    ["Ever attended",                             everAttended,  pct_(everAttended,  totalPeople)],
+    ["Attended more than once",                   attendedTwice, pct_(attendedTwice, totalPeople)],
+    ["RSVP'd but never attended",                 rsvpNoShow,    pct_(rsvpNoShow,    totalPeople)],
+    ["Attended without ever RSVP'ing (walk-ins)", walkInOnly,    pct_(walkInOnly,    totalPeople)],
+    ["RSVP'd and attended at least once",         converted,     pct_(converted,     totalPeople)]
+  ];
+
+  sheet.getRange(startRow, 1, rows.length, 3).setValues(rows);
+  sheet.getRange(startRow, 1, 1, 3).setFontWeight("bold").setBackground("#D8E4BC");
+  sheet.getRange(startRow + 1, 2, rows.length - 1, 1).setNumberFormat("0");
+  sheet.getRange(startRow + 1, 3, rows.length - 1, 1).setNumberFormat("0.0");
+  sheet.getRange(startRow, 1, rows.length, 3)
+       .setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID);
+
+  let row = startRow + rows.length;
+  sheet.getRange(row, 1).setValue(
+    "Of the " + everRsvped + " individuals who ever RSVP'd, " + converted + " (" +
+    pct_(converted, everRsvped) + "%) showed up at least once."
+  );
+  sheet.getRange(row, 1).setFontWeight("bold");
+  row++;
+
+  sheet.getRange(row, 1).setValue(
+    "Head counts, de-duplicated by name — unlike \"Total RSVPs\" in the year table above, which counts one per " +
+    "event. \"# Events RSVP'd\" counts only \"RSVP'd: yes\" (maybes excluded); \"# Events Attended\" counts every " +
+    "\"Attended: yes\", walk-ins included."
+  );
+  sheet.getRange(row, 1).setFontStyle("italic").setFontSize(9);
+
+  return row + 2;
+}
+
+/**
+ * The cumulative view: how many individuals came (or RSVP'd) at least 1, 2, 3,
+ * 5, 10, 20 and 50 times.
+ */
+function createEngagementThresholdSection_(sheet, startRow, people) {
+  people = people || extractPeopleEngagement_();
+
+  startRow = writeTitle_(sheet, startRow, 1, "Depth of Engagement — Individuals by Threshold", 13);
+
+  if (people.length === 0) {
+    sheet.getRange(startRow, 1).setValue("No people found in the Contact List.");
+    return startRow + 2;
+  }
+
+  const headers  = ["Threshold", "Individuals RSVP'd", "Individuals Attended"];
+  const dataRows = ENGAGEMENT_THRESHOLDS.map(n => [
+    n + "+",
+    countAtLeast_(people, "rsvp", n),
+    countAtLeast_(people, "attended", n)
+  ]);
+  const data = [headers, ...dataRows];
+
+  sheet.getRange(startRow, 1, data.length, 3).setValues(data);
+  sheet.getRange(startRow, 1, 1, 3).setFontWeight("bold").setBackground("#D8E4BC");
+  sheet.getRange(startRow + 1, 2, dataRows.length, 2).setNumberFormat("0");
+
+  insertColumnChart_(
+    sheet,
+    sheet.getRange(startRow, 1, data.length, 3),
+    startRow, 5,
+    "Individuals Reaching Each Threshold",
+    "Times RSVP'd / attended",
+    {
+      0: { color: "#4285F4", labelInLegend: "Individuals RSVP'd" },
+      1: { color: "#34A853", labelInLegend: "Individuals Attended" }
+    }
+  );
+
+  const noteRow = startRow + data.length;
+  sheet.getRange(noteRow, 1).setValue("Cumulative: the \"5+\" row includes everyone in the 10+, 20+ and 50+ rows.");
+  sheet.getRange(noteRow, 1).setFontStyle("italic").setFontSize(9);
+
+  return startRow + Math.max(data.length + 1, CHART_ROW_SPAN) + 2;
+}
+
+/**
+ * Shared body for the two frequency-distribution sections: non-overlapping
+ * buckets (1, 2, 3–4, 5–9, 10–19, 20–49, 50+) plus a bar chart.
+ */
+function createFrequencyDistributionSection_(sheet, startRow, people, field, title, unitHeader, color) {
+  people = people || extractPeopleEngagement_();
+
+  startRow = writeTitle_(sheet, startRow, 1, title, 13);
+
+  const counts  = bucketCounts_(people, field);
+  const engaged = counts.reduce((s, r) => s + r[1], 0);
+  if (engaged === 0) {
+    sheet.getRange(startRow, 1).setValue("No " + unitHeader.toLowerCase() + " data found.");
+    return startRow + 2;
+  }
+
+  const headers  = [unitHeader, "Individuals", "% of engaged"];
+  const dataRows = counts.map(r => [r[0], r[1], pct_(r[1], engaged)]);
+  const data     = [headers, ...dataRows];
+
+  sheet.getRange(startRow, 1, data.length, 3).setValues(data);
+  sheet.getRange(startRow, 1, 1, 3).setFontWeight("bold").setBackground("#D8E4BC");
+  sheet.getRange(startRow + 1, 2, dataRows.length, 1).setNumberFormat("0");
+  sheet.getRange(startRow + 1, 3, dataRows.length, 1).setNumberFormat("0.0");
+
+  // Chart the label + count columns only — the % column stays in the table.
+  insertBarChart_(
+    sheet,
+    sheet.getRange(startRow, 1, data.length, 2),
+    startRow, 5,
+    title,
+    color,
+    dataRows.length,
+    "Individuals"
+  );
+
+  const noteRow = startRow + data.length;
+  sheet.getRange(noteRow, 1).setValue(
+    engaged + " individuals have at least one; the percentages are of those " + engaged + ", not of the whole list."
+  );
+  sheet.getRange(noteRow, 1).setFontStyle("italic").setFontSize(9);
+
+  return startRow + Math.max(data.length + 1, CHART_ROW_SPAN) + 2;
+}
+
+function createAttendanceDistributionSection_(sheet, startRow, people) {
+  return createFrequencyDistributionSection_(
+    sheet, startRow, people, "attended",
+    "Attendance Frequency — How Often Individuals Came",
+    "Times Attended", "#34A853"
+  );
+}
+
+function createRsvpDistributionSection_(sheet, startRow, people) {
+  return createFrequencyDistributionSection_(
+    sheet, startRow, people, "rsvp",
+    "RSVP Frequency — How Often Individuals RSVP'd",
+    "Times RSVP'd", "#4285F4"
+  );
+}
+
+/**
+ * The outreach roster: people who keep saying yes but have never walked in.
+ * Highest declared interest, zero conversion — the shortest bridge to build.
+ */
+function createHighInterestNotConvertedSection_(sheet, startRow, people) {
+  people = people || extractPeopleEngagement_();
+
+  startRow = writeTitle_(sheet, startRow, 1,
+    "High Interest, Not Yet Converted — RSVP'd 2+ Times, Never Attended", 13);
+
+  const candidates = people
+    .filter(p => p.rsvp >= 2 && p.attended === 0)
+    .sort((a, b) => b.rsvp - a.rsvp);
+
+  if (candidates.length === 0) {
+    sheet.getRange(startRow, 1)
+         .setValue("Nobody has RSVP'd twice or more without attending — everyone who keeps saying yes has shown up.");
+    return startRow + 3;
+  }
+
+  const shown = candidates.slice(0, HIGH_INTEREST_LIST_LIMIT);
+  const data  = [["Name", "Times RSVP'd"], ...shown.map(p => [p.name, p.rsvp])];
+
+  sheet.getRange(startRow, 1, data.length, 2).setValues(data);
+  sheet.getRange(startRow, 1, 1, 2).setFontWeight("bold").setBackground("#D8E4BC");
+  sheet.getRange(startRow + 1, 2, shown.length, 1).setNumberFormat("0");
+
+  let row = startRow + data.length;
+  if (candidates.length > shown.length) {
+    sheet.getRange(row, 1).setValue(
+      "…and " + (candidates.length - shown.length) + " more (" + candidates.length + " in total)."
+    );
+    sheet.getRange(row, 1).setFontStyle("italic").setFontSize(9);
+    row++;
+  }
+
+  Logger.log("High interest, not converted: " + candidates.length + " people");
+  return row + 2;
+}
+
 // ─── MAIN ENTRY POINT ────────────────────────────────────────────────────────
 
 /**
  * Main function — creates / refreshes a single "Data Analysis Graphs" sheet
- * containing: all-years summary → frequent attendees → per-year sections.
+ * containing, top to bottom: all-years event summary → top RSVP'd events →
+ * person-centric engagement (head counts, depth thresholds, frequency
+ * distributions, the not-yet-converted outreach roster) → frequent attendees →
+ * per-year sections.
  */
 function createRSVPvsAttendanceChart() {
   const [contactListSheet] = sheetsByName();
@@ -599,8 +931,18 @@ function createRSVPvsAttendanceChart() {
   row = createAllYearsTopRSVPSection_(sheet, row);
   row += 2;
 
+  // Person-centric engagement. The Contact List is read once here and the same
+  // roll-up is handed to every section below, including Frequent Attendees.
+  const people = extractPeopleEngagement_();
+  row = createEngagementOverviewSection_(sheet, row, people);
+  row = createEngagementThresholdSection_(sheet, row, people);
+  row = createAttendanceDistributionSection_(sheet, row, people);
+  row = createRsvpDistributionSection_(sheet, row, people);
+  row = createHighInterestNotConvertedSection_(sheet, row, people);
+  row += 2;
+
   // Frequent attendees
-  row = createFrequentAttendeesSection_(sheet, row);
+  row = createFrequentAttendeesSection_(sheet, row, people);
   row += 2;
 
   // Per-year sections (all in same sheet)
